@@ -14,7 +14,7 @@ A definition is one SVG path and an eye placement. The library infers a volume f
 Add the package to your `Package.swift` dependencies:
 
 ```swift
-.package(url: "https://github.com/cheetahbyte/open-bot-avatar-swift.git", branch: "main")
+.package(url: "https://github.com/cheetahbyte/open-bot-avatar-swift.git", from: "0.1.0")
 ```
 
 The package has two products:
