@@ -32,6 +32,10 @@ public struct AvatarAnimator: Sendable {
         var mood: AvatarMood
         var from: AvatarMoodState?
         var since: Double
+
+        func state(at now: Double) -> AvatarMoodState {
+            from.map { .easing(mood, from: $0, t: AvatarMoodState.progress(elapsed: now - since)) } ?? .settled(mood)
+        }
     }
 
     private var follow = AvatarFollowState.rest
@@ -48,26 +52,14 @@ public struct AvatarAnimator: Sendable {
             moving = follow.step(toward: input.target, deltaTime: dt, reducedMotion: input.reducedMotion)
         }
 
-        // A new mood eases in from the pose on screen, a change under way included.
         if let current = shown, input.mood != current.mood {
-            let state = current.from.map {
-                AvatarMoodState.easing(current.mood, from: $0, t: AvatarMoodState.progress(elapsed: input.now - current.since))
-            } ?? .settled(current.mood)
-            shown = Shown(mood: input.mood, from: input.reducedMotion ? nil : state.frozen(), since: input.now)
+            shown = Shown(mood: input.mood, from: current.state(at: input.now).frozen(), since: input.now)
         }
         var current = shown ?? Shown(mood: input.mood, since: input.now)
-        let t = input.reducedMotion ? 1 : AvatarMoodState.progress(elapsed: input.now - current.since)
-        var mood = AvatarMoodState.settled(current.mood)
-        if let from = current.from, t < 1 {
-            mood = .easing(current.mood, from: from, t: t)
-        } else {
-            current.from = nil
-        }
+        if input.reducedMotion || AvatarMoodState.progress(elapsed: input.now - current.since) >= 1 { current.from = nil }
         shown = current
 
-        var easing = false
-        if case .easing = mood { easing = true }
-        return Step(gaze: follow.gaze, mood: mood, moving: moving || easing)
+        return Step(gaze: follow.gaze, mood: current.state(at: input.now), moving: moving || current.from != nil)
     }
 
     /// Back to rest with no mood history.

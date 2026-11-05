@@ -51,6 +51,10 @@ public struct AvatarPose: Hashable, Sendable {
     static let lookYaw = 0.32
     static let lookPitch = 0.18
     static let lookEyes = 0.7
+    /// Bounds on the motion: the hop, and the share of a point's distance from the base that roll
+    /// and squash can move it. `PreparedAvatar.extent` relies on them.
+    static let maxLift = 4.0
+    static let maxSway = 0.2
 
     public var yaw = baseYaw
     public var pitch = basePitch
@@ -97,13 +101,13 @@ public struct AvatarPose: Hashable, Sendable {
             self = Self.moodPose(input, mood)
         case let .easing(mood, from, t):
             let pose = Self.moodPose(input, mood)
-            guard t < 1 else {
+            guard t.isFinite, t < 1 else {
                 self = pose
                 return
             }
             var earlier = input
             earlier.mood = from
-            self = Self.blend(AvatarPose(earlier), pose, t.isFinite ? t : 1)
+            self = Self.blend(AvatarPose(earlier), pose, t)
         }
     }
 
@@ -135,8 +139,9 @@ public struct AvatarPose: Hashable, Sendable {
     private static func moodPose(_ input: Input, _ mood: AvatarMood) -> AvatarPose {
         let seed = input.seed, reduced = input.reducedMotion
         let tau = Double.pi * 2
-        // Per-avatar phase offset so several avatars on screen do not move in lockstep.
-        let t = reduced ? 0 : input.time + AvatarNoise.value(seed, 7) * 10
+        // Slot indices in `AvatarNoise` must fit an Int; this also rejects NaN and infinity.
+        let time = abs(input.time) < 1e15 ? input.time : 0
+        let t = reduced ? 0 : time + AvatarNoise.value(seed, 7) * 10
         func wave(_ period: Double, _ phase: Double = 0) -> Double {
             reduced ? 0 : sin(tau * t / period + phase)
         }
@@ -146,27 +151,28 @@ public struct AvatarPose: Hashable, Sendable {
             given = (clamp(gaze.x, -1, 1), clamp(gaze.y, -1, 1))
             weight = gaze.weight.isFinite ? clamp(gaze.weight, 0, 1) : 1
         }
-        // While it attends to a target the body holds its aim: idle sway of the turn settles to a trace.
         let sway = 1 - 0.7 * weight
 
         var pose = AvatarPose()
         switch mood {
         case .happy:
-            let period = 0.92
-            let p = reduced ? 0.5 : ((t.truncatingRemainder(dividingBy: period)) + period).truncatingRemainder(dividingBy: period) / period
-            let air = 4 * p * (1 - p)
-            let land = reduced ? 0 : clamp(1 - min(p, 1 - p) / 0.12, 0, 1)
-            pose.lift = reduced ? 0 : -3.2 * air
-            pose.scaleY = 1 - 0.09 * land + 0.03 * air * (reduced ? 0 : 1)
-            pose.scaleX = 1 + 0.07 * land - 0.015 * air * (reduced ? 0 : 1)
-            pose.roll = 4.5 * wave(period * 2)
-            pose.yaw += 0.1 * wave(period * 2, 0.6)
             pose.eyeShape = .happy
+            if !reduced {
+                let period = 0.92
+                let p = ((t.truncatingRemainder(dividingBy: period)) + period).truncatingRemainder(dividingBy: period) / period
+                let air = 4 * p * (1 - p)
+                let land = clamp(1 - min(p, 1 - p) / 0.12, 0, 1)
+                pose.lift = -3.2 * air
+                pose.scaleY = 1 - 0.09 * land + 0.03 * air
+                pose.scaleX = 1 + 0.07 * land - 0.015 * air
+                pose.roll = 4.5 * wave(period * 2)
+                pose.yaw += 0.1 * wave(period * 2, 0.6)
+            }
         case .thinking:
             pose.yaw += 0.12 + 0.05 * sway * wave(7.3)
             pose.pitch += 0.08
             pose.roll = -5 + 1.4 * wave(4.1)
-            pose.lift = -0.5 * (1 - cos(tau * t / 5.2)) * (reduced ? 0 : 1)
+            pose.lift = -0.5 * (1 - cos(tau * t / 5.2))
             pose.gazeX = 0.55 + 0.3 * wave(5.6)
             pose.gazeY = -0.8
             pose.squintLeft = 0.22
@@ -176,7 +182,7 @@ public struct AvatarPose: Hashable, Sendable {
             pose.yaw += 0.07 * sway * wave(6.1)
             pose.pitch += 0.04 * sway * wave(4.7, 1)
             pose.roll = 1.6 * wave(5.3, 2)
-            pose.lift = reduced ? 0 : -0.45 * (1 - cos(tau * t / 3.4))
+            pose.lift = -0.45 * (1 - cos(tau * t / 3.4))
             let breath = wave(3.4, -.pi / 2)
             pose.scaleY = 1 + 0.012 * breath
             pose.scaleX = 1 - 0.008 * breath
@@ -187,9 +193,6 @@ public struct AvatarPose: Hashable, Sendable {
         }
 
         if let given, weight > 0 {
-            // A target wins over idle wander. The resting three-quarter turn gives way, so a target on
-            // either side turns the front that way, and the eyes add a modest share. Reduced motion
-            // keeps the body still, so the eyes alone use their full (still small) range.
             func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * weight }
             let share = reduced ? 1 : lookEyes
             if pose.eyeShape == .pill {
@@ -206,55 +209,5 @@ public struct AvatarPose: Hashable, Sendable {
             pose.pitch += view.pitch
         }
         return pose
-    }
-}
-
-/// Seeded, stateless motion noise. Ids are hashed as UTF-16, like the TypeScript engine.
-public enum AvatarNoise {
-    public static func hash(_ string: String) -> UInt32 {
-        var h: UInt32 = 2_166_136_261
-        for unit in string.utf16 {
-            h ^= UInt32(unit)
-            h = h &* 16_777_619
-        }
-        return h
-    }
-
-    /// In [0, 1).
-    static func value(_ seed: UInt32, _ n: Int) -> Double {
-        var h = seed ^ (UInt32(truncatingIfNeeded: n) &* 0x9E37_79B1)
-        h = (h ^ (h >> 16)) &* 0x85EB_CA6B
-        h = (h ^ (h >> 13)) &* 0xC2B2_AE35
-        h ^= h >> 16
-        return Double(h) / 4_294_967_296
-    }
-
-    /// Closure 0...1: one blink per ~4.2 s slot at a seeded offset, sometimes a double blink.
-    static func blink(_ seed: UInt32, _ t: Double) -> Double {
-        let slotLength = 4.2, duration = 0.19
-        let slot = Int((t / slotLength).rounded(.down))
-        var closure = 0.0
-        for s in [slot - 1, slot] {
-            let start = Double(s) * slotLength + 0.5 + value(seed, s * 2) * 2.9
-            let starts = value(seed, s * 2 + 1) > 0.8 ? [start, start + 0.34] : [start]
-            for b in starts {
-                let u = (t - b) / duration
-                if u > 0 && u < 1 { closure = max(closure, sin(.pi * u)) }
-            }
-        }
-        return closure
-    }
-
-    /// Idle eye wander: short holds between quick saccades, centered more often than not.
-    static func wander(_ seed: UInt32, _ t: Double) -> (Double, Double) {
-        let slotLength = 1.9
-        let s = Int((t / slotLength).rounded(.down))
-        func target(_ k: Int) -> (Double, Double) {
-            if value(seed, 1000 + k * 3) < 0.4 { return (0, 0) }
-            return ((value(seed, 1001 + k * 3) * 2 - 1) * 0.6, (value(seed, 1002 + k * 3) * 2 - 1) * 0.35)
-        }
-        let a = target(s - 1), b = target(s)
-        let e = smoothstep((t - Double(s) * slotLength) / 0.16)
-        return (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e)
     }
 }

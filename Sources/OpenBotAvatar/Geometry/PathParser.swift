@@ -1,6 +1,3 @@
-/// Restricted SVG path parser: M L H V C S Q T A Z, absolute and relative, and nothing else.
-/// Everything downstream is rebuilt from the parsed numbers, so model-written text never reaches
-/// markup.
 enum PathLimits {
     static let maxCharacters = 6000
     static let maxSegments = 400
@@ -42,7 +39,7 @@ private func isDigit(_ s: Unicode.Scalar) -> Bool {
     s.value >= 48 && s.value <= 57
 }
 
-private func tokenize(_ path: String) throws -> [Token] {
+private func tokenize(_ path: String) throws(PathError) -> [Token] {
     let scalars = Array(path.unicodeScalars)
     if let bad = scalars.first(where: { !(isCommand($0) || isDigit($0) || isSeparator($0) || ".eE+-".unicodeScalars.contains($0)) }) {
         throw PathError("unsupported character \"\(bad)\" (allowed commands: M L H V C S Q T A Z)")
@@ -98,11 +95,13 @@ private func numberEnd(_ s: [Unicode.Scalar], from start: Int) -> Int? {
 }
 
 private func uppercased(_ s: Unicode.Scalar) -> Unicode.Scalar {
-    s.value >= 97 ? Unicode.Scalar(s.value - 32) ?? s : s
+    s.value >= 97 ? Unicode.Scalar(UInt8(s.value - 32)) : s
 }
 
-/// Parses to absolute segments. Throws `PathError`.
-func parsePath(_ path: String) throws -> [AvatarPathSegment] {
+/// Parses to absolute segments. A restricted SVG path: M L H V C S Q T A Z, absolute and relative, and nothing else.
+/// Everything downstream is rebuilt from the parsed numbers, so model-written text never reaches
+/// markup.
+func parsePath(_ path: String) throws(PathError) -> [AvatarPathSegment] {
     if path.allSatisfy(\.isWhitespace) { throw PathError("path is empty") }
     if path.utf16.count > PathLimits.maxCharacters {
         throw PathError("path longer than \(PathLimits.maxCharacters) characters")
@@ -118,10 +117,10 @@ func parsePath(_ path: String) throws -> [AvatarPathSegment] {
     var open = false
 
     while i < tokens.count {
-        if case let .command(c) = tokens[i] {
-            command = c
+        if case let .command(next) = tokens[i] {
+            command = next
             i += 1
-            if c == "Z" || c == "z" {
+            if next == "Z" || next == "z" {
                 if !open { throw PathError("Z without an open subpath") }
                 out.append(.close)
                 cx = sx
@@ -131,12 +130,9 @@ func parsePath(_ path: String) throws -> [AvatarPathSegment] {
                 open = false
                 continue
             }
-        } else if command == nil {
-            throw PathError("path must start with M")
-        } else if command == "Z" || command == "z" {
-            throw PathError("numbers after Z")
         }
-        guard let cmd = command else { break }
+        guard let cmd = command else { throw PathError("path must start with M") }
+        if cmd == "Z" || cmd == "z" { throw PathError("numbers after Z") }
         let up = uppercased(cmd)
         let relative = cmd != up
         if out.isEmpty && up != "M" { throw PathError("path must start with M") }
@@ -175,18 +171,16 @@ func parsePath(_ path: String) throws -> [AvatarPathSegment] {
         case "V":
             cy = args[0] + oy
             out.append(.line(x: cx, y: cy))
-        case "C", "S":
-            var x1 = cx, y1 = cy, rest = args[...]
-            if up == "C" {
-                x1 = args[0] + ox
-                y1 = args[1] + oy
-                rest = args[2...]
-            } else if let previous = prevCubic {
-                x1 = 2 * cx - previous.x
-                y1 = 2 * cy - previous.y
-            }
-            let a = Array(rest)
-            let x2 = a[0] + ox, y2 = a[1] + oy, x = a[2] + ox, y = a[3] + oy
+        case "C":
+            let x2 = args[2] + ox, y2 = args[3] + oy, x = args[4] + ox, y = args[5] + oy
+            out.append(.cubic(x1: args[0] + ox, y1: args[1] + oy, x2: x2, y2: y2, x: x, y: y))
+            nextCubic = Point(x: x2, y: y2)
+            cx = x
+            cy = y
+        case "S":
+            let x1 = prevCubic.map { 2 * cx - $0.x } ?? cx
+            let y1 = prevCubic.map { 2 * cy - $0.y } ?? cy
+            let x2 = args[0] + ox, y2 = args[1] + oy, x = args[2] + ox, y = args[3] + oy
             out.append(.cubic(x1: x1, y1: y1, x2: x2, y2: y2, x: x, y: y))
             nextCubic = Point(x: x2, y: y2)
             cx = x
@@ -205,7 +199,7 @@ func parsePath(_ path: String) throws -> [AvatarPathSegment] {
             nextQuadratic = Point(x: x1, y: y1)
             cx = x
             cy = y
-        case "A":
+        default: // The tokenizer leaves only A.
             if args[0] < 0 || args[1] < 0 { throw PathError("arc radii must be non-negative") }
             if (args[3] != 0 && args[3] != 1) || (args[4] != 0 && args[4] != 1) {
                 throw PathError("arc flags must be 0 or 1, written as separate numbers")
@@ -213,8 +207,6 @@ func parsePath(_ path: String) throws -> [AvatarPathSegment] {
             cx = args[5] + ox
             cy = args[6] + oy
             out.append(.arc(AvatarPathArc(rx: args[0], ry: args[1], rotation: args[2], large: args[3] == 1, sweep: args[4] == 1, x: cx, y: cy)))
-        default:
-            throw PathError("unsupported command \(cmd)")
         }
         prevCubic = nextCubic
         prevQuadratic = nextQuadratic

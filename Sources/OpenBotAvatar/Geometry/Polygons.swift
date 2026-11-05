@@ -5,18 +5,17 @@ struct Point: Hashable, Sendable {
     var y: Double
 }
 
-struct Bounds: Hashable, Sendable {
-    var minX: Double
-    var minY: Double
-    var maxX: Double
-    var maxY: Double
-
-    var width: Double { maxX - minX }
-    var height: Double { maxY - minY }
-    var center: Point { Point(x: (minX + maxX) / 2, y: (minY + maxY) / 2) }
+@inline(__always)
+func forEachEdge(_ polys: [[Point]], _ body: (Point, Point) -> Void) {
+    for poly in polys {
+        guard var previous = poly.last else { continue }
+        for point in poly {
+            body(previous, point)
+            previous = point
+        }
+    }
 }
 
-/// Flattens into closed polygons, one per subpath.
 func flattenPath(_ segments: [AvatarPathSegment]) -> [[Point]] {
     var polys: [[Point]] = []
     var current: [Point] = []
@@ -82,16 +81,11 @@ private func sampleArc(_ arc: AvatarPathArc, fromX x0: Double, y y0: Double, int
 /// Nonzero winding of a point against all subpaths (the SVG default fill rule).
 func isInside(_ polys: [[Point]], _ x: Double, _ y: Double) -> Bool {
     var winding = 0
-    for poly in polys {
-        var j = poly.count - 1
-        for i in poly.indices {
-            let pi = poly[i], pj = poly[j]
-            if pj.y <= y {
-                if pi.y > y && (pi.x - pj.x) * (y - pj.y) - (x - pj.x) * (pi.y - pj.y) > 0 { winding += 1 }
-            } else if pi.y <= y && (pi.x - pj.x) * (y - pj.y) - (x - pj.x) * (pi.y - pj.y) < 0 {
-                winding -= 1
-            }
-            j = i
+    forEachEdge(polys) { p, q in
+        if p.y <= y {
+            if q.y > y && (q.x - p.x) * (y - p.y) - (x - p.x) * (q.y - p.y) > 0 { winding += 1 }
+        } else if q.y <= y && (q.x - p.x) * (y - p.y) - (x - p.x) * (q.y - p.y) < 0 {
+            winding -= 1
         }
     }
     return winding != 0
@@ -100,16 +94,11 @@ func isInside(_ polys: [[Point]], _ x: Double, _ y: Double) -> Bool {
 /// Nonzero inside flags for many points on one row (`xs` ascending), from one pass over the edges.
 func insideRow(_ polys: [[Point]], y: Double, xs: [Double], out: inout [UInt8]) {
     var hits: [(x: Double, direction: Int)] = []
-    for poly in polys {
-        var j = poly.count - 1
-        for i in poly.indices {
-            let pj = poly[j], pi = poly[i]
-            if pj.y <= y && pi.y > y {
-                hits.append((pj.x + (y - pj.y) * (pi.x - pj.x) / (pi.y - pj.y), 1))
-            } else if pi.y <= y && pj.y > y {
-                hits.append((pj.x + (y - pj.y) * (pi.x - pj.x) / (pi.y - pj.y), -1))
-            }
-            j = i
+    forEachEdge(polys) { p, q in
+        if p.y <= y && q.y > y {
+            hits.append((p.x + (y - p.y) * (q.x - p.x) / (q.y - p.y), 1))
+        } else if q.y <= y && p.y > y {
+            hits.append((p.x + (y - p.y) * (q.x - p.x) / (q.y - p.y), -1))
         }
     }
     hits.sort { $0.x < $1.x }
@@ -123,34 +112,22 @@ func insideRow(_ polys: [[Point]], y: Double, xs: [Double], out: inout [UInt8]) 
     }
 }
 
-func polygonBounds(_ polys: [[Point]]) -> Bounds {
-    var b = Bounds(minX: .infinity, minY: .infinity, maxX: -.infinity, maxY: -.infinity)
+func polygonBounds(_ polys: [[Point]]) -> AvatarBounds {
+    var bounds = AvatarBounds()
     for poly in polys {
-        for p in poly {
-            if p.x < b.minX { b.minX = p.x }
-            if p.y < b.minY { b.minY = p.y }
-            if p.x > b.maxX { b.maxX = p.x }
-            if p.y > b.maxY { b.maxY = p.y }
-        }
+        for p in poly { bounds.add((p.x, p.y)) }
     }
-    return b
+    return bounds
 }
 
 /// Filled area estimated on a 1-unit sample grid (nonzero rule).
-func filledArea(_ polys: [[Point]], _ b: Bounds) -> Double {
+func filledArea(_ polys: [[Point]], _ b: AvatarBounds) -> Double {
     var count = 0
-    var xs: [Double] = []
-    var x = b.minX.rounded(.down) + 0.5
-    while x < b.maxX {
-        xs.append(x)
-        x += 1
-    }
+    let xs = accumulatedSamples(from: b.x0.rounded(.down) + 0.5, to: b.x1, by: 1)
     var row = [UInt8](repeating: 0, count: xs.count)
-    var y = b.minY.rounded(.down) + 0.5
-    while y < b.maxY {
+    for y in accumulatedSamples(from: b.y0.rounded(.down) + 0.5, to: b.y1, by: 1) {
         insideRow(polys, y: y, xs: xs, out: &row)
         for v in row { count += Int(v) }
-        y += 1
     }
     return Double(count)
 }

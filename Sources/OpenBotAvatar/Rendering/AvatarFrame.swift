@@ -26,20 +26,6 @@ public struct AvatarFrameOptions: Hashable, Sendable {
     }
 }
 
-public struct AvatarBox: Hashable, Sendable {
-    public var x: Double
-    public var y: Double
-    public var width: Double
-    public var height: Double
-
-    public init(x: Double, y: Double, width: Double, height: Double) {
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-    }
-}
-
 /// One cross-section outline, shared by every shape that draws it. `box` bounds it in its own
 /// coordinates, before a shape's matrix.
 public struct AvatarFramePath: Sendable {

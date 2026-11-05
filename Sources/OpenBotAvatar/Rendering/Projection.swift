@@ -42,16 +42,27 @@ public struct AvatarMatrix: Hashable, Sendable {
 
 /// Orthographic view from yaw and pitch.
 struct ViewBasis {
-    var cosYaw: Double
-    var sinYaw: Double
-    var cosPitch: Double
-    var sinPitch: Double
+    private let cosYaw: Double
+    private let sinYaw: Double
+    private let cosPitch: Double
+    private let sinPitch: Double
+    /// Screen shift per unit of depth.
+    private let sweep: Double
+    /// Smallest on-screen size of an in-plane distance.
+    private let insetScale: Double
 
     init(yaw: Double, pitch: Double) {
         cosYaw = cos(yaw)
         sinYaw = sin(yaw)
         cosPitch = cos(pitch)
         sinPitch = sin(pitch)
+        sweep = hypot(sinYaw, cosYaw * sinPitch)
+        insetScale = min(abs(cosYaw), abs(cosPitch))
+    }
+
+    /// Whether a z-slice `inset` from the outline stays behind the core at depth `z`.
+    func hides(inset: Double, z: Double) -> Bool {
+        inset > 0 && abs(z) * sweep <= inset * insetScale
     }
 
     /// Toward-viewer component of a model-space direction (1 is straight at the viewer).
@@ -59,9 +70,9 @@ struct ViewBasis {
         sinPitch * n.y + cosPitch * (-sinYaw * n.x + cosYaw * n.z)
     }
 
-    /// The slice stack that faces the viewer more.
-    var activeStack: SliceAxis {
-        abs(cosYaw) >= abs(sinYaw) ? .z : .x
+    /// Whether the x-slices face the viewer more than the z-slices.
+    var showsSide: Bool {
+        abs(cosYaw) < abs(sinYaw)
     }
 
     /// Projection of the plane at depth z, pivoting on `pivot` at z = 0.
@@ -82,6 +93,6 @@ struct ViewBasis {
 
     /// Depth toward the viewer of a 3D point.
     func depth(x: Double, y: Double, z: Double, pivot: Point) -> Double {
-        sinPitch * (y - pivot.y) + cosPitch * (-sinYaw * (x - pivot.x) + cosYaw * z)
+        facing(SIMD3(x - pivot.x, y - pivot.y, z))
     }
 }

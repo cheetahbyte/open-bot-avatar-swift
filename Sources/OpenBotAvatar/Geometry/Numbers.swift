@@ -31,3 +31,15 @@ func smoothstep(_ value: Double) -> Double {
     let x = clamp(value, 0, 1)
     return x * x * (3 - 2 * x)
 }
+
+/// `start`, `start + step`, ... below `end`, summed rather than multiplied so the samples match the
+/// TypeScript engine's to the last bit.
+func accumulatedSamples(from start: Double, to end: Double, by step: Double) -> [Double] {
+    var out: [Double] = []
+    var value = start
+    while value < end {
+        out.append(value)
+        value += step
+    }
+    return out
+}

@@ -1,7 +1,6 @@
 import OSLog
 import OpenBotAvatar
 import QuartzCore
-import SwiftUI
 
 #if os(macOS)
     import AppKit
@@ -23,6 +22,8 @@ struct AvatarSurfaceState: Equatable {
     var still: Bool
     var fill: CGColor
     var ink: CGColor
+
+    var followsPointer: Bool { gaze == .pointer && !still }
 }
 
 /// Avatars smaller than this, in points, redraw at 30 Hz: the difference doesn't show, and screens
@@ -38,47 +39,30 @@ private final class DisplayLinkTarget: NSObject {
     }
 }
 
-/// Paints a frame loop into one bitmap on one layer, so an avatar costs one layer however many
-/// slices it shows. The layer overhangs the view by the avatar's reach and ignores input.
+/// Runs an avatar's frame loop: prepares the geometry off the main thread, steps the animator and
+/// paints to an `AvatarCanvas`. Pauses out of view and ignores input.
 final class AvatarSurfaceView: AvatarPlatformView {
     private var state: AvatarSurfaceState?
     private var prepared: PreparedAvatar?
     private var preparing: Task<Void, Never>?
     private var animator = AvatarAnimator()
+    private var canvas = AvatarCanvas()
+    private var pointer = AvatarPointer()
     private var link: CADisplayLink?
     private let linkTarget = DisplayLinkTarget()
-    private let content = CALayer()
-
-    private var bitmap: CGContext?
-    private var bitmapKey: BitmapKey?
-    private var fit: AvatarSquare?
-    private var left = 0
-    private var top = 0
-
-    private struct BitmapKey: Equatable {
-        var size: CGFloat
-        var scale: CGFloat
-        var avatar: ObjectIdentifier
-    }
-
-    #if os(iOS)
-        private var pointerRecognizer: AvatarPointerRecognizer?
-    #endif
 
     init() {
         super.init(frame: .zero)
         linkTarget.owner = self
-        content.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "contentsScale": NSNull()]
+        clipsToBounds = false
         #if os(macOS)
             wantsLayer = true
-            clipsToBounds = false
             layer?.masksToBounds = false
-            layer?.addSublayer(content)
+            layer?.addSublayer(canvas.layer)
         #else
             isUserInteractionEnabled = false
             backgroundColor = .clear
-            clipsToBounds = false
-            layer.addSublayer(content)
+            layer.addSublayer(canvas.layer)
             registerForTraitChanges([UITraitDisplayScale.self]) { (view: AvatarSurfaceView, _) in view.redraw() }
         #endif
     }
@@ -91,7 +75,7 @@ final class AvatarSurfaceView: AvatarPlatformView {
         let geometryChanged = next.definition != state?.definition || next.depth != state?.depth
         state = next
         if geometryChanged { prepare(next) }
-        syncPointerTracking()
+        syncPointer()
         redraw()
     }
 
@@ -99,104 +83,69 @@ final class AvatarSurfaceView: AvatarPlatformView {
         preparing?.cancel()
         preparing = nil
         if let ready = PreparedAvatar.cachedIfReady(state.definition, depth: state.depth) {
-            install(ready)
+            prepared = ready
             return
         }
         let (definition, depth) = (state.definition, state.depth)
         preparing = Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) {
-                Result { try PreparedAvatar.cached(definition, depth: depth) }
+                Result {
+                    let ready = try PreparedAvatar.cached(definition, depth: depth)
+                    _ = AvatarPainter.cached(ready)
+                    return ready
+                }
             }.value
             guard !Task.isCancelled, let self else { return }
             switch result {
             case let .success(ready):
-                self.install(ready)
+                self.prepared = ready
                 self.redraw()
             case let .failure(error):
                 log.error("open-bot-avatar: render failed: \(error.localizedDescription, privacy: .public)")
-                self.install(nil)
+                self.prepared = nil
+                self.canvas.clear()
+                self.setRunning(false)
             }
         }
     }
 
-    private func install(_ next: PreparedAvatar?) {
-        prepared = next
-        animator.reset()
-        if next == nil {
-            content.contents = nil
-            setRunning(false)
-        }
+    private func syncPointer() {
+        pointer.follow(in: state?.followsPointer == true ? window : nil)
     }
 
     // MARK: Frames
 
-    private var box: (origin: CGPoint, size: CGFloat) {
-        let size = min(bounds.width, bounds.height)
-        return (CGPoint(x: (bounds.width - size) / 2, y: (bounds.height - size) / 2), size)
-    }
-
-    private var isOnScreen: Bool {
-        guard let window, !isHiddenOrHasHiddenAncestorOrInvisible else { return false }
-        #if os(macOS)
-            return window.occlusionState.contains(.visible) && !visibleRect.isEmpty
-        #else
-            return window.bounds.insetBy(dx: -100, dy: -100).intersects(convert(bounds, to: window))
-        #endif
-    }
-
-    private var isHiddenOrHasHiddenAncestorOrInvisible: Bool {
-        #if os(macOS)
-            isHiddenOrHasHiddenAncestor
-        #else
-            isHidden || alpha == 0
-        #endif
-    }
-
-    private var contentScale: CGFloat {
-        #if os(macOS)
-            window?.backingScaleFactor ?? 2
-        #else
-            traitCollection.displayScale > 0 ? traitCollection.displayScale : 2
-        #endif
-    }
+    /// `AvatarView` keeps this view square.
+    private var size: CGFloat { bounds.width }
 
     /// Draws now, whether or not the view is on screen, then keeps going if the avatar is animated.
-    fileprivate func redraw() {
-        guard window != nil, let state, let prepared, box.size > 0 else {
-            setRunning(false)
-            return
-        }
-        setRunning(draw(state, prepared))
+    private func redraw() {
+        setRunning(window != nil && size > 0 && draw())
     }
 
     fileprivate func tick() {
-        guard let state, let prepared else { return setRunning(false) }
         // Offscreen the link stays up, so the avatar picks up again with no scroll callback.
-        if isOnScreen { setRunning(draw(state, prepared)) }
+        if isOnScreen { setRunning(draw()) }
     }
 
     /// Returns whether more frames are needed.
-    private func draw(_ state: AvatarSurfaceState, _ prepared: PreparedAvatar) -> Bool {
-        let size = box.size
-        guard size > 0 else { return false }
+    private func draw() -> Bool {
+        guard let state, let prepared else { return false }
         if state.still {
             var gaze: AvatarGaze?
             if case let .look(look) = state.gaze { gaze = AvatarGaze(x: look.x, y: look.y) }
-            let options = AvatarFrameOptions(
-                mood: .settled(state.mood), gaze: gaze, view: state.rotation, reducedMotion: true)
+            let options = AvatarFrameOptions(mood: .settled(state.mood), gaze: gaze, view: state.rotation, reducedMotion: true)
             paint(prepared.frame(options), prepared, state)
             return false
         }
-        let reduced = state.reducedMotion
         let now = CACurrentMediaTime()
-        var hold = false
-        if case .hold = state.gaze { hold = true }
         let step = animator.step(AvatarAnimator.Input(
-            now: now, mood: state.mood, target: lookTarget(state, prepared), hold: hold, reducedMotion: reduced))
+            now: now, mood: state.mood, target: lookTarget(state, prepared), hold: state.gaze == .hold,
+            reducedMotion: state.reducedMotion))
         let options = AvatarFrameOptions(
-            time: now, mood: step.mood, gaze: step.gaze, view: state.rotation, reducedMotion: reduced)
+            time: now, mood: step.mood, gaze: step.gaze, view: state.rotation, reducedMotion: state.reducedMotion)
         paint(prepared.frame(options, liveSize: size), prepared, state)
-        return !reduced || step.moving || state.gaze == .pointer
+        return !state.reducedMotion || step.moving || state.followsPointer
     }
 
     private func lookTarget(_ state: AvatarSurfaceState, _ prepared: PreparedAvatar) -> AvatarLook? {
@@ -204,55 +153,24 @@ final class AvatarSurfaceView: AvatarPlatformView {
         case let .look(look):
             return look
         case .pointer:
-            guard let pointer = pointerLocation else { return nil }
-            let (origin, size) = box
-            let eyes = prepared.definition.eyes
-            return AvatarFollowState.look(
-                at: (pointer.x, pointer.y), box: (origin.x, origin.y, size, size),
-                origin: (min(1, max(0, eyes.x / 100)), min(1, max(0, eyes.y / 100))))
+            guard let location = pointer.location(in: self) else { return nil }
+            return AvatarFollowState.look(at: (location.x, location.y), box: (0, 0, size, size), origin: prepared.lookOrigin)
         case .idle, .hold:
             return nil
         }
     }
 
     private func paint(_ frame: AvatarFrame, _ prepared: PreparedAvatar, _ state: AvatarSurfaceState) {
-        let (origin, size) = box
-        let scale = contentScale
-        let unit = Double(size * scale) / 100
-        let (matrices, bounds) = frame.placement()
-        let key = BitmapKey(size: size, scale: scale, avatar: ObjectIdentifier(prepared))
-        let previous = bitmapKey == key ? fit : nil
-        let next = AvatarBitmapFit.square(previous: previous, bounds: bounds, cap: prepared.extent)
-        if bitmap == nil || previous != next {
-            bitmapKey = key
-            fit = next
-            // Whole device pixels, so the bitmap is never resampled.
-            left = Int((next.x * unit).rounded(.down))
-            top = Int((next.y * unit).rounded(.down))
-            let side = Int((next.size * unit).rounded(.up)) + 1
-            bitmap = AvatarBitmap.makeContext(side: side)
-            content.contentsScale = scale
-            content.frame = CGRect(
-                x: origin.x + CGFloat(left) / scale, y: origin.y + CGFloat(top) / scale,
-                width: CGFloat(side) / scale, height: CGFloat(side) / scale)
-        }
-        guard let bitmap else { return }
-        bitmap.clear(CGRect(x: 0, y: 0, width: bitmap.width, height: bitmap.height))
-        bitmap.saveGState()
-        bitmap.translateBy(x: CGFloat(-left), y: CGFloat(bitmap.height + top))
-        bitmap.scaleBy(x: unit, y: -unit)
-        AvatarPainter.cached(prepared).paint(frame, matrices: matrices, in: bitmap, fill: state.fill, ink: state.ink)
-        bitmap.restoreGState()
-        content.contents = bitmap.makeImage()
+        canvas.paint(frame, of: prepared, size: size, scale: contentScale, fill: state.fill, ink: state.ink)
     }
 
     private func setRunning(_ running: Bool) {
-        guard running, window != nil else {
+        guard running else {
             link?.invalidate()
             link = nil
             return
         }
-        let range = box.size < smallSize ? CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30) : CAFrameRateRange.default
+        let range = size < smallSize ? CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30) : CAFrameRateRange.default
         if let link {
             if link.preferredFrameRateRange != range { link.preferredFrameRateRange = range }
             return
@@ -267,32 +185,16 @@ final class AvatarSurfaceView: AvatarPlatformView {
         link = next
     }
 
-    // MARK: Pointer
-
-    /// The pointer in this view's coordinates (y down), nil when there is none.
-    private var pointerLocation: CGPoint? {
-        guard let window else { return nil }
-        #if os(macOS)
-            let mouse = NSEvent.mouseLocation
-            guard NSApp?.isActive == true, window.frame.contains(mouse) else { return nil }
-            return convert(window.convertPoint(fromScreen: mouse), from: nil)
-        #else
-            return pointerRecognizer?.location.map { convert($0, from: window) }
-        #endif
-    }
-
-    private func syncPointerTracking() {
-        #if os(iOS)
-            let wanted = window.flatMap { state?.gaze == .pointer && state?.still == false ? $0 : nil }
-            guard wanted != pointerRecognizer?.view else { return }
-            pointerRecognizer?.release()
-            pointerRecognizer = wanted.map(AvatarPointerRecognizer.retained)
-        #endif
-    }
-
-    // MARK: Layout
+    // MARK: Platform
 
     #if os(macOS)
+        private var isOnScreen: Bool {
+            guard let window, !isHiddenOrHasHiddenAncestor else { return false }
+            return window.occlusionState.contains(.visible) && !visibleRect.isEmpty
+        }
+
+        private var contentScale: CGFloat { window?.backingScaleFactor ?? 1 }
+
         override var isFlipped: Bool { true }
         // Clicks and hovers belong to the views around the avatar.
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -304,6 +206,7 @@ final class AvatarSurfaceView: AvatarPlatformView {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            syncPointer()
             redraw()
         }
 
@@ -312,6 +215,15 @@ final class AvatarSurfaceView: AvatarPlatformView {
             redraw()
         }
     #else
+        private var isOnScreen: Bool {
+            guard let window, sequence(first: self as UIView, next: \.superview).allSatisfy({ !$0.isHidden && $0.alpha > 0 }) else {
+                return false
+            }
+            return window.bounds.insetBy(dx: -100, dy: -100).intersects(convert(bounds, to: window))
+        }
+
+        private var contentScale: CGFloat { traitCollection.displayScale }
+
         override func layoutSubviews() {
             super.layoutSubviews()
             redraw()
@@ -319,7 +231,7 @@ final class AvatarSurfaceView: AvatarPlatformView {
 
         override func didMoveToWindow() {
             super.didMoveToWindow()
-            syncPointerTracking()
+            syncPointer()
             redraw()
         }
     #endif

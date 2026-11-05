@@ -1,5 +1,3 @@
-import Foundation
-
 private func segmentDistance(_ px: Double, _ py: Double, _ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> Double {
     let dx = bx - ax, dy = by - ay
     let length = dx * dx + dy * dy
@@ -9,16 +7,10 @@ private func segmentDistance(_ px: Double, _ py: Double, _ ax: Double, _ ay: Dou
     return (ex * ex + ey * ey).squareRoot()
 }
 
-/// Distance from a point to the nearest edge of the polygons.
 func edgeDistance(_ polys: [[Point]], _ x: Double, _ y: Double) -> Double {
     var best = Double.infinity
-    for poly in polys {
-        var j = poly.count - 1
-        for i in poly.indices {
-            let d = segmentDistance(x, y, poly[j].x, poly[j].y, poly[i].x, poly[i].y)
-            if d < best { best = d }
-            j = i
-        }
+    forEachEdge(polys) { p, q in
+        best = min(best, segmentDistance(x, y, p.x, p.y, q.x, q.y))
     }
     return best
 }
@@ -26,39 +18,39 @@ func edgeDistance(_ polys: [[Point]], _ x: Double, _ y: Double) -> Double {
 /// Edges bucketed on a coarse grid, for nearest-edge queries that only visit nearby buckets.
 private struct EdgeIndex {
     private let cell = 3.0
-    private var buckets: [[Int32]]
-    private var edges: [Double] = []
+    private let buckets: [[Int32]]
+    private let edges: [Double]
     private let originX: Double
     private let originY: Double
     private let span: Int
 
-    init(_ polys: [[Point]], _ b: Bounds) {
-        originX = b.minX - 4
-        originY = b.minY - 4
+    init(_ polys: [[Point]], _ b: AvatarBounds) {
+        originX = b.x0 - 4
+        originY = b.y0 - 4
         span = Int(((max(b.width, b.height) + 8) / cell).rounded(.up)) + 1
-        buckets = Array(repeating: [], count: span * span)
-        for poly in polys {
-            var j = poly.count - 1
-            for i in poly.indices {
-                let p = poly[j], q = poly[i]
-                let k = Int32(edges.count)
-                edges.append(contentsOf: [p.x, p.y, q.x, q.y])
-                for cy in cellY(min(p.y, q.y))...cellY(max(p.y, q.y)) {
-                    for cx in cellX(min(p.x, q.x))...cellX(max(p.x, q.x)) {
-                        buckets[cy * span + cx].append(k)
-                    }
+        var buckets = [[Int32]](repeating: [], count: span * span)
+        var edges: [Double] = []
+        let span = span, originX = originX, originY = originY, cell = cell
+        forEachEdge(polys) { p, q in
+            let k = Int32(edges.count)
+            edges.append(contentsOf: [p.x, p.y, q.x, q.y])
+            for cy in Self.cell(min(p.y, q.y), originY, cell, span)...Self.cell(max(p.y, q.y), originY, cell, span) {
+                for cx in Self.cell(min(p.x, q.x), originX, cell, span)...Self.cell(max(p.x, q.x), originX, cell, span) {
+                    buckets[cy * span + cx].append(k)
                 }
-                j = i
             }
         }
+        self.buckets = buckets
+        self.edges = edges
     }
 
-    private func cellX(_ x: Double) -> Int { max(0, min(span - 1, Int(((x - originX) / cell).rounded(.down)))) }
-    private func cellY(_ y: Double) -> Int { max(0, min(span - 1, Int(((y - originY) / cell).rounded(.down)))) }
+    private static func cell(_ value: Double, _ origin: Double, _ cell: Double, _ span: Int) -> Int {
+        max(0, min(span - 1, Int(((value - origin) / cell).rounded(.down))))
+    }
 
     /// Searches rings of buckets outward until no closer edge can exist.
     func distance(_ x: Double, _ y: Double) -> Double {
-        let bx = cellX(x), by = cellY(y)
+        let bx = Self.cell(x, originX, cell, span), by = Self.cell(y, originY, cell, span)
         var best = Double.infinity
         var r = 0
         while r < span {
@@ -79,7 +71,6 @@ private struct EdgeIndex {
                     }
                 }
             }
-            // Every bucket outside ring r is at least r cells away.
             if best <= Double(r) * cell { break }
             r += 1
         }
@@ -97,17 +88,17 @@ struct DepthGrid {
     var signedDistance: [Double]
     var height: [Double]
 
-    init(_ polys: [[Point]], _ b: Bounds, step: Double, height heightAt: (Double, Double, Double) -> Double) {
+    init(_ polys: [[Point]], _ b: AvatarBounds, step: Double, height heightAt: (Double, Double, Double) -> Double) {
         let pad = 1.0
-        x0 = b.minX - pad
-        y0 = b.minY - pad
+        x0 = b.x0 - pad
+        y0 = b.y0 - pad
         self.step = step
         nx = Int(((b.width + 2 * pad) / step).rounded(.up)) + 1
         ny = Int(((b.height + 2 * pad) / step).rounded(.up)) + 1
         signedDistance = Array(repeating: 0, count: nx * ny)
         height = Array(repeating: 0, count: nx * ny)
         let index = EdgeIndex(polys, b)
-        let xs = (0..<nx).map { (b.minX - pad) + Double($0) * step }
+        let xs = (0..<nx).map { (b.x0 - pad) + Double($0) * step }
         var inside = [UInt8](repeating: 0, count: nx)
         for j in 0..<ny {
             let y = y0 + Double(j) * step
@@ -131,12 +122,14 @@ struct CellBox {
     var top = 0.0
 }
 
+/// How far a simplified cross-section may stray from its contour, units.
+private let contourTolerance = 0.04
+
 /// Steepness of the outline term in the contour field, so cross-sections hug the outline.
 private let outlineSlope = 4.0
 
 /// Cross-section {h ≥ level} clipped to the outline (and to `box`, if given), as loops.
 func levelLoops(_ g: DepthGrid, level: Double, box: CellBox? = nil) -> [[Point]] {
-    // A box is contoured on its own samples plus one ring outside it, where the clip is negative.
     let i0 = box.map { max(0, $0.i0 - 1) } ?? 0, i1 = box.map { min(g.nx - 1, $0.i1 + 1) } ?? g.nx - 1
     let j0 = box.map { max(0, $0.j0 - 1) } ?? 0, j1 = box.map { min(g.ny - 1, $0.j1 + 1) } ?? g.ny - 1
     let nx = i1 - i0 + 1, ny = j1 - j0 + 1
@@ -153,7 +146,7 @@ func levelLoops(_ g: DepthGrid, level: Double, box: CellBox? = nil) -> [[Point]]
         }
     }
     let field = Field(values: values, nx: nx, ny: ny, x0: g.x0 + Double(i0) * g.step, y0: g.y0 + Double(j0) * g.step, step: g.step)
-    return contourLoops(field).map { simplifyLoop($0, tolerance: 0.04) }.filter { $0.count >= 3 }
+    return contourLoops(field).map { simplifyLoop($0, tolerance: contourTolerance) }.filter { $0.count >= 3 }
 }
 
 /// Thin regions get refinement slices: a thin, deep protrusion seen at an angle shifts more between
@@ -207,13 +200,11 @@ func thinBoxes(_ g: DepthGrid) -> [CellBox] {
                 stack.append(n)
             }
         }
-        // Specks are not worth a slice.
         if Double(cells) * g.step * g.step < 2 { continue }
         boxes.append(CellBox(
             i0: max(0, box.i0 - grow), i1: min(nx - 1, box.i1 + grow),
             j0: max(0, box.j0 - grow), j1: min(ny - 1, box.j1 + grow), top: box.top))
     }
-    // Overlapping boxes become one, so no cross-section is drawn twice.
     var a = 0
     while a < boxes.count {
         var b = a + 1
@@ -272,7 +263,7 @@ func columnLoops(_ g: DepthGrid, c0: Int, c1: Int, edgeHeight: (Double, Double) 
         right.append(Point(x: j1 < g.ny - 1 ? rim(yBottom, j1) : h[j1], y: yBottom))
         if (right.map(\.x).max() ?? 0) < 0.05 { continue }
         let left = right.reversed().map { Point(x: -$0.x, y: $0.y) }
-        loops.append(simplifyLoop(right + left, tolerance: 0.04))
+        loops.append(simplifyLoop(right + left, tolerance: contourTolerance))
     }
     return loops
 }

@@ -1,4 +1,4 @@
-/// A sampled scalar field. The outermost ring should be below every level.
+/// A sampled scalar field. The outermost ring should be negative.
 struct Field {
     var values: [Double]
     var nx: Int
@@ -12,8 +12,6 @@ struct Field {
 func contourLoops(_ field: Field) -> [[Point]] {
     let nx = field.nx, ny = field.ny, values = field.values
     let keys = 2 * nx * ny
-    // Edge keys: horizontal (i,j)-(i+1,j) is 2*(j*nx+i), vertical (i,j)-(i,j+1) is that plus 1.
-    // A cell links an edge once, and an edge borders two cells, so two link slots are enough.
     var firstLink = [Int32](repeating: -1, count: keys)
     var secondLink = [Int32](repeating: -1, count: keys)
     var order: [Int] = []
@@ -53,7 +51,6 @@ func contourLoops(_ field: Field) -> [[Point]] {
             let top = 2 * (j * nx + i), bottom = 2 * ((j + 1) * nx + i)
             let left = 2 * (j * nx + i) + 1, right = 2 * (j * nx + i + 1) + 1
             if code == 10 || code == 5 {
-                // Diagonal corners: the center decides whether they connect through the cell.
                 let center = (vtl + vtr + vbr + vbl) / 4 >= 0
                 if (code == 10) == center {
                     link(top, right)
@@ -107,10 +104,8 @@ private func perpendicular(_ p: Point, _ a: Point, _ b: Point) -> Double {
     return abs(dx * (a.y - p.y) - dy * (a.x - p.x)) / length
 }
 
-/// Ramer-Douglas-Peucker on a closed loop.
 func simplifyLoop(_ loop: [Point], tolerance: Double) -> [Point] {
     if loop.count <= 8 { return loop }
-    // Split at the point farthest from the first so the closed loop becomes two open chains.
     var far = 0, best = -1.0
     for k in 1..<loop.count {
         let dx = loop[k].x - loop[0].x, dy = loop[k].y - loop[0].y
@@ -144,28 +139,5 @@ func simplifyLoop(_ loop: [Point], tolerance: Double) -> [Point] {
     }
     var out: [Point] = []
     for k in loop.indices where keep[k] { out.append(loop[k]) }
-    return out
-}
-
-func loopsToPath(_ loops: [[Point]]) -> String {
-    var out = ""
-    for loop in loops {
-        out += "M\(rounded1(loop[0].x)) \(rounded1(loop[0].y))L"
-        for k in 1..<loop.count {
-            if k > 1 { out += " " }
-            out += "\(rounded1(loop[k].x)) \(rounded1(loop[k].y))"
-        }
-        out += "Z"
-    }
-    return out
-}
-
-func loopsToSegments(_ loops: [[Point]]) -> [AvatarPathSegment] {
-    var out: [AvatarPathSegment] = []
-    for loop in loops {
-        out.append(.move(x: loop[0].x, y: loop[0].y))
-        for p in loop.dropFirst() { out.append(.line(x: p.x, y: p.y)) }
-        out.append(.close)
-    }
     return out
 }

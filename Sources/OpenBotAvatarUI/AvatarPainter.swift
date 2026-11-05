@@ -19,7 +19,11 @@ public final class AvatarPainter: @unchecked Sendable {
     private let paths: [CGPath]
     private let evenOdd: [Bool]
 
-    nonisolated(unsafe) private static let shared = NSCache<PreparedAvatar, AvatarPainter>()
+    nonisolated(unsafe) private static let shared: NSCache<PreparedAvatar, AvatarPainter> = {
+        let cache = NSCache<PreparedAvatar, AvatarPainter>()
+        cache.countLimit = PreparedAvatar.cacheLimit
+        return cache
+    }()
 
     public init(_ prepared: PreparedAvatar) {
         paths = prepared.paths.map { makePath($0.segments) }
@@ -114,9 +118,7 @@ extension PreparedAvatar {
     /// colors in `options`.
     public func image(_ options: AvatarFrameOptions = AvatarFrameOptions(), pixels: Int, fill: CGColor? = nil, ink: CGColor? = nil) -> CGImage? {
         guard pixels > 0, let context = AvatarBitmap.makeContext(side: pixels) else { return nil }
-        let scale = Double(pixels) / 100
-        context.translateBy(x: 0, y: CGFloat(pixels))
-        context.scaleBy(x: scale, y: -scale)
+        AvatarBitmap.mapViewBox(in: context, unit: Double(pixels) / viewBoxSize, left: 0, top: 0)
         let frame = frame(options)
         AvatarPainter.cached(self).paint(frame, matrices: frame.placement().matrices, in: context, fill: fill, ink: ink)
         return context.makeImage()
@@ -129,5 +131,12 @@ enum AvatarBitmap {
         return CGContext(
             data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0, space: space,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    }
+
+    /// Maps viewBox units (y down) to pixels (y up), with `unit` pixels per viewBox unit and the
+    /// viewBox pixel (`left`, `top`) at the bitmap's top-left corner.
+    static func mapViewBox(in context: CGContext, unit: Double, left: Int, top: Int) {
+        context.translateBy(x: CGFloat(-left), y: CGFloat(context.height + top))
+        context.scaleBy(x: unit, y: -unit)
     }
 }

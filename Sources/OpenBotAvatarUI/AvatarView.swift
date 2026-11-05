@@ -29,15 +29,7 @@ extension Color {
 /// A live avatar. It fills the largest centered square it is offered and overhangs it while turning.
 /// Animation pauses out of view, and input passes through to the views around it.
 public struct AvatarView: View {
-    private let definition: AvatarDefinition
-    private let color: Color
-    private let eyeColor: Color
-    private let mood: AvatarMood
-    private let gaze: AvatarGazeBehavior
-    private let rotation: AvatarViewRotation?
-    private let depth: Double
-    private let motion: AvatarMotionPreference
-    private let still: Bool
+    private let surface: AvatarSurface
     private let label: String?
 
     /// - Parameters:
@@ -57,30 +49,20 @@ public struct AvatarView: View {
         still: Bool = false,
         label: String? = nil
     ) {
-        self.definition = definition
-        self.color = color
-        self.eyeColor = eyeColor
-        self.mood = mood
-        self.gaze = gaze
-        self.rotation = rotation
-        self.depth = depth
-        self.motion = motion
-        self.still = still
+        surface = AvatarSurface(
+            definition: definition, color: color, eyeColor: eyeColor, mood: mood, gaze: gaze, rotation: rotation,
+            depth: depth, motion: motion, still: still)
         self.label = label
     }
 
     public var body: some View {
-        let surface = AvatarSurface(
-            definition: definition, color: color, eyeColor: eyeColor, mood: mood, gaze: gaze, rotation: rotation,
-            depth: depth, motion: motion, still: still
-        )
-        .aspectRatio(1, contentMode: .fit)
+        let square = surface.aspectRatio(1, contentMode: .fit)
         if label == "" {
-            surface.accessibilityHidden(true)
+            square.accessibilityHidden(true)
         } else {
-            surface
+            square
                 .accessibilityElement()
-                .accessibilityLabel(label ?? definition.name)
+                .accessibilityLabel(label ?? surface.definition.name)
                 .accessibilityAddTraits(.isImage)
         }
     }

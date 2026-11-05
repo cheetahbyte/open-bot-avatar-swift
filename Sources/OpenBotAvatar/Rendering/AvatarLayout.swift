@@ -11,30 +11,6 @@ public struct AvatarSquare: Hashable, Sendable {
     }
 }
 
-/// An axis-aligned box in viewBox units; empty when `x0 > x1`.
-public struct AvatarBounds: Hashable, Sendable {
-    public var x0 = Double.infinity
-    public var y0 = Double.infinity
-    public var x1 = -Double.infinity
-    public var y1 = -Double.infinity
-
-    public init() {}
-
-    public init(x0: Double, y0: Double, x1: Double, y1: Double) {
-        self.x0 = x0
-        self.y0 = y0
-        self.x1 = x1
-        self.y1 = y1
-    }
-
-    mutating func add(_ p: (x: Double, y: Double)) {
-        if p.x < x0 { x0 = p.x }
-        if p.x > x1 { x1 = p.x }
-        if p.y < y0 { y0 = p.y }
-        if p.y > y1 { y1 = p.y }
-    }
-}
-
 /// Sizes a bitmap to what the frames actually paint, plus slack. Covering every possible view up
 /// front (`PreparedAvatar.extent`, kept as the upper bound) would cost about three times as much.
 public enum AvatarBitmapFit {
@@ -91,7 +67,6 @@ extension AvatarEyeMark {
         case let .pill(x, y, width, height, _):
             return AvatarBox(x: x, y: y, width: width, height: height)
         case let .arc(startX, startY, controlX, controlY, endX, endY, strokeWidth):
-            // A quadratic arc lies within its points' hull; the stroke reaches half its width past it.
             let x = min(startX, controlX, endX) - strokeWidth, y = min(startY, controlY, endY) - strokeWidth
             return AvatarBox(
                 x: x, y: y,

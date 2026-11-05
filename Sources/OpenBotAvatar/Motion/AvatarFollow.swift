@@ -27,7 +27,6 @@ public struct AvatarFollowState: Hashable, Sendable {
         let goal = target.map { AvatarFollowState(x: $0.x, y: $0.y, attention: 1) } ?? .rest
         let dt = max(0, min(deltaTime, 0.1))
         func ease(_ tau: Double) -> Double { reducedMotion ? 1 : 1 - exp(-dt / tau) }
-        // Losing the target relaxes the look at the unhurried attention rate, as one movement.
         let k = ease(target != nil ? Self.lookTime : Self.attentionTime)
         let next = AvatarFollowState(
             x: x + (goal.x - x) * k,
