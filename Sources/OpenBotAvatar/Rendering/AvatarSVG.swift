@@ -3,24 +3,23 @@ extension PreparedAvatar {
     /// only from numbers and the renderer's own markup.
     public func svg(_ options: AvatarFrameOptions = AvatarFrameOptions(), size: Double? = nil) -> String {
         let frame = frame(options)
-        var slices: [(key: AvatarSliceKey, path: Int)] = []
+        var used = Set<Int>()
         var body = ""
         let ink = frame.ink.hex
         for shape in frame.shapes {
             switch shape {
-            case let .slice(key, path, matrix):
-                slices.append((key, path))
-                body += "<use href=\"#\(paths[path].id)\" transform=\"\(matrixText(matrix))\"/>"
+            case let .slice(_, path, matrix):
+                used.insert(path)
+                body += "<use href=\"#\(frame.paths[path].id)\" transform=\"\(matrixText(matrix))\"/>"
             case let .eye(_, matrix, mark):
                 body += "<g transform=\"\(matrixText(matrix))\">\(eyeMarkup(mark, ink: ink))</g>"
+            case let .ribbon(_, d, _, matrix, _, _, gradient):
+                body += "<g transform=\"\(matrixText(matrix))\">\(ribbonMarkup(d, gradient))</g>"
             }
         }
         // Defs follow the volume's slice order, not paint order, which matches the TypeScript output.
-        slices.sort { ($0.key.part, $0.key.index) < ($1.key.part, $1.key.index) }
-        var seen = Set<Int>()
         var defs = ""
-        for slice in slices where seen.insert(slice.path).inserted {
-            let path = paths[slice.path]
+        for (index, path) in frame.paths.enumerated() where used.contains(index) {
             defs += "<path id=\"\(path.id)\" d=\"\(path.d)\"\(path.evenOdd ? " fill-rule=\"evenodd\"" : "")/>"
         }
         var dimensions = ""
@@ -58,10 +57,24 @@ private func matrixText(_ m: AvatarMatrix) -> String {
 private func eyeMarkup(_ mark: AvatarEyeMark, ink: String) -> String {
     let f = rounded2
     switch mark {
+    case let .path(d):
+        return "<path d=\"\(d)\" fill=\"\(ink)\"/>"
     case let .pill(x, y, width, height, radius):
         return "<rect x=\"\(f(x))\" y=\"\(f(y))\" width=\"\(f(width))\" height=\"\(f(height))\" rx=\"\(f(radius))\" fill=\"\(ink)\"/>"
     case let .arc(startX, startY, controlX, controlY, endX, endY, strokeWidth):
         let d = "M\(f(startX)) \(f(startY))Q\(f(controlX)) \(f(controlY)) \(f(endX)) \(f(endY))"
         return "<path d=\"\(d)\" fill=\"none\" stroke=\"\(ink)\" stroke-width=\"\(f(strokeWidth))\" stroke-linecap=\"round\"/>"
     }
+}
+
+private func ribbonMarkup(_ d: String, _ gradient: AvatarRibbonGradient) -> String {
+    let coordinates = [gradient.x1, gradient.y1, gradient.x2, gradient.y2].map(rounded2)
+    let colors = gradient.stops.map(\.hex)
+    let signature = (coordinates + [colors.joined(separator: ",")]).joined(separator: ",")
+    let id = "oba-g\(String(AvatarNoise.hash(signature), radix: 36))"
+    let stops = colors.enumerated().map { index, color in
+        "<stop offset=\"\(rounded2(Double(index) / Double(colors.count - 1)))\" stop-color=\"\(color)\"/>"
+    }.joined()
+    return "<linearGradient id=\"\(id)\" gradientUnits=\"userSpaceOnUse\" x1=\"\(coordinates[0])\" y1=\"\(coordinates[1])\" x2=\"\(coordinates[2])\" y2=\"\(coordinates[3])\">\(stops)</linearGradient>"
+        + "<path d=\"\(d)\" fill=\"url(#\(id))\"/>"
 }

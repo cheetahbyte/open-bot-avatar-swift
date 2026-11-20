@@ -20,13 +20,19 @@ public enum AvatarNoise {
         return Double(h) / 4_294_967_296
     }
 
+    /// JavaScript coerces noise indices to signed 32-bit integers after doing slot arithmetic
+    /// as doubles. Keep that order, including for clocks too large to fit a Swift Int.
+    static func value(_ seed: UInt32, _ n: Double) -> Double {
+        value(seed, n.isFinite ? Int(n.truncatingRemainder(dividingBy: 4_294_967_296)) : 0)
+    }
+
     /// Closure 0...1: one blink per ~4.2 s slot at a seeded offset, sometimes a double blink.
     static func blink(_ seed: UInt32, _ t: Double) -> Double {
         let slotLength = 4.2, duration = 0.19
-        let slot = Int((t / slotLength).rounded(.down))
+        let slot = (t / slotLength).rounded(.down)
         var closure = 0.0
         for s in [slot - 1, slot] {
-            let start = Double(s) * slotLength + 0.5 + value(seed, s * 2) * 2.9
+            let start = s * slotLength + 0.5 + value(seed, s * 2) * 2.9
             let starts = value(seed, s * 2 + 1) > 0.8 ? [start, start + 0.34] : [start]
             for b in starts {
                 let u = (t - b) / duration
@@ -36,16 +42,28 @@ public enum AvatarNoise {
         return closure
     }
 
+    /// Working eyes dart from one thing to the next, mostly down at the work.
+    static func dart(_ seed: UInt32, _ t: Double) -> (Double, Double) {
+        let slotLength = 0.62
+        let s = (t / slotLength).rounded(.down)
+        func target(_ k: Double) -> (Double, Double) {
+            ((value(seed, 2001 + k * 3) * 2 - 1) * 0.8, 0.1 + value(seed, 2002 + k * 3) * 0.5)
+        }
+        let a = target(s - 1), b = target(s)
+        let e = smoothstep((t - s * slotLength) / 0.12)
+        return (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e)
+    }
+
     /// Idle eye wander: short holds between quick saccades, centered more often than not.
     static func wander(_ seed: UInt32, _ t: Double) -> (Double, Double) {
         let slotLength = 1.9
-        let s = Int((t / slotLength).rounded(.down))
-        func target(_ k: Int) -> (Double, Double) {
+        let s = (t / slotLength).rounded(.down)
+        func target(_ k: Double) -> (Double, Double) {
             if value(seed, 1000 + k * 3) < 0.4 { return (0, 0) }
             return ((value(seed, 1001 + k * 3) * 2 - 1) * 0.6, (value(seed, 1002 + k * 3) * 2 - 1) * 0.35)
         }
         let a = target(s - 1), b = target(s)
-        let e = smoothstep((t - Double(s) * slotLength) / 0.16)
+        let e = smoothstep((t - s * slotLength) / 0.16)
         return (a.0 + (b.0 - a.0) * e, a.1 + (b.1 - a.1) * e)
     }
 }

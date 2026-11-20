@@ -10,6 +10,16 @@ let package = Package(
     ],
     targets: [
         .target(name: "OpenBotAvatar"),
-        .target(name: "OpenBotAvatarUI", dependencies: ["OpenBotAvatar"])
+        .target(name: "OpenBotAvatarUI", dependencies: ["OpenBotAvatar"]),
+        .testTarget(
+            name: "OpenBotAvatarTests",
+            dependencies: ["OpenBotAvatar"],
+            resources: [.process("Fixtures")]
+        ),
+        .testTarget(
+            name: "OpenBotAvatarUITests",
+            dependencies: ["OpenBotAvatar", "OpenBotAvatarUI"],
+            path: "Tests/OpenBotAvatarUITests"
+        )
     ]
 )

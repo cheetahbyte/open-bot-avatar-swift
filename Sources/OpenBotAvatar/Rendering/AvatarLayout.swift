@@ -50,6 +50,7 @@ extension AvatarFrame {
             switch shape {
             case let .slice(_, path, _): box = paths[path].box
             case let .eye(_, _, mark): box = mark.box
+            case let .ribbon(_, _, ribbonBox, _, _, _, _): box = ribbonBox
             }
             bounds.add(m.apply(x: box.x, y: box.y))
             bounds.add(m.apply(x: box.x + box.width, y: box.y))
@@ -64,6 +65,8 @@ extension AvatarFrame {
 extension AvatarEyeMark {
     fileprivate var box: AvatarBox {
         switch self {
+        case let .path(d):
+            return (try? parsePath(d)).map { polygonBounds(flattenPath($0)).box } ?? AvatarBox(x: 0, y: 0, width: 0, height: 0)
         case let .pill(x, y, width, height, _):
             return AvatarBox(x: x, y: y, width: width, height: height)
         case let .arc(startX, startY, controlX, controlY, endX, endY, strokeWidth):

@@ -47,21 +47,9 @@ struct SliceOutline: Sendable {
     }
 
     init(loops: [[Point]]) {
-        var d = ""
-        var segments: [AvatarPathSegment] = []
-        for loop in loops {
-            d += "M\(rounded1(loop[0].x)) \(rounded1(loop[0].y))L"
-            segments.append(.move(x: loop[0].x, y: loop[0].y))
-            for k in 1..<loop.count {
-                if k > 1 { d += " " }
-                d += "\(rounded1(loop[k].x)) \(rounded1(loop[k].y))"
-                segments.append(.line(x: loop[k].x, y: loop[k].y))
-            }
-            d += "Z"
-            segments.append(.close)
-        }
-        self.d = d
-        self.segments = segments
+        let path = loopsToPath(loops)
+        d = path.d
+        segments = path.segments
         evenOdd = true
         box = polygonBounds(loops).box
     }
@@ -85,6 +73,7 @@ private struct OutlineTable {
 
     mutating func enter(_ drafts: [SliceDraft]) -> [VolumeSlice] {
         drafts.map { draft in
+            // Equal snapped paths share one outline and retain the first entry's unsnapped box.
             let index = indices[draft.outline.d] ?? outlines.count
             if index == outlines.count {
                 indices[draft.outline.d] = index
@@ -154,7 +143,7 @@ private func faceSlices(_ polys: [[Point]], _ shape: PartShape, _ grid: DepthGri
     var drafts: [SliceDraft] = []
 
     func addLevel(_ level: Double, box: CellBox? = nil) -> Bool {
-        let loops = levelLoops(grid, level: level, box: box)
+        let loops = levelLoops(grid, level: level, field: shape.levelField, box: box)
         if loops.isEmpty { return false }
         var inset = Double.infinity
         for (k, p) in loops.joined().enumerated() where k % 3 == 0 {

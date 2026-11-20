@@ -16,6 +16,9 @@ func forEachEdge(_ polys: [[Point]], _ body: (Point, Point) -> Void) {
     }
 }
 
+/// Largest permitted gap, in viewBox units, between a curve and its flattened polygon.
+let pathFlatness = 0.02
+
 func flattenPath(_ segments: [AvatarPathSegment]) -> [[Point]] {
     var polys: [[Point]] = []
     var current: [Point] = []
@@ -32,8 +35,11 @@ func flattenPath(_ segments: [AvatarPathSegment]) -> [[Point]] {
             px = x
             py = y
         case let .cubic(x1, y1, x2, y2, x, y):
-            for k in 1...12 {
-                let t = Double(k) / 12, u = 1 - t
+            // Wang's bound keeps each chord within pathFlatness of the curve.
+            let m = max(hypot2(px - 2 * x1 + x2, py - 2 * y1 + y2), hypot2(x1 - 2 * x2 + x, y1 - 2 * y2 + y))
+            let n = min(128, max(2, Int(((0.75 * m / pathFlatness).squareRoot()).rounded(.up))))
+            for k in 1...n {
+                let t = Double(k) / Double(n), u = 1 - t
                 current.append(Point(
                     x: u * u * u * px + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * x,
                     y: u * u * u * py + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y))
@@ -41,8 +47,10 @@ func flattenPath(_ segments: [AvatarPathSegment]) -> [[Point]] {
             px = x
             py = y
         case let .quadratic(x1, y1, x, y):
-            for k in 1...8 {
-                let t = Double(k) / 8, u = 1 - t
+            let m = hypot2(px - 2 * x1 + x, py - 2 * y1 + y)
+            let n = min(128, max(2, Int(((0.25 * m / pathFlatness).squareRoot()).rounded(.up))))
+            for k in 1...n {
+                let t = Double(k) / Double(n), u = 1 - t
                 current.append(Point(x: u * u * px + 2 * u * t * x1 + t * t * x, y: u * u * py + 2 * u * t * y1 + t * t * y))
             }
             px = x
@@ -70,7 +78,9 @@ private func sampleArc(_ arc: AvatarPathArc, fromX x0: Double, y y0: Double, int
         return
     }
     let cosine = cos(c.rotation), sine = sin(c.rotation)
-    let steps = max(4, Int((abs(c.delta) / (.pi / 2) * 6).rounded(.up)))
+    // A chord over angle theta sags r * (1 - cos(theta / 2)).
+    let step = 2 * acos(max(-1, 1 - pathFlatness / max(c.rx, c.ry)))
+    let steps = min(256, max(4, Int((abs(c.delta) / step).rounded(.up))))
     for k in 1...steps {
         let t = c.start + c.delta * Double(k) / Double(steps)
         let ex = c.rx * cos(t), ey = c.ry * sin(t)

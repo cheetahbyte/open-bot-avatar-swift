@@ -85,7 +85,8 @@ struct Face: Sendable {
         let dx = pose.gazeX * (pose.gazeX >= 0 ? gazeLimits.right : gazeLimits.left) * EyeMetrics.gazeX * scale
         let dy = pose.gazeY * (pose.gazeY >= 0 ? gazeLimits.down : gazeLimits.up) * EyeMetrics.gazeY * scale
         let x = centers[index].x + dx, y = centers[index].y + dy
-        if pose.eyeShape == .happy {
+        let plain = plainLook(pose.eyes)
+        if plain == .happy {
             let arc = HappyArc(x: x, y: y, w: w, h: h)
             return .arc(
                 startX: arc.start.x, startY: arc.start.y, controlX: arc.control.x, controlY: arc.control.y,
@@ -94,6 +95,9 @@ struct Face: Sendable {
         let squint = index == 0 ? pose.squintLeft : pose.squintRight
         let open = max(h * max(0.09, (1 - pose.blink) * (1 - squint * 0.4)), w * 0.55)
         let shift = (h - open) * 0.18
+        if plain == nil {
+            return .path(d: eyePath(pose.eyes, EyeSpot(x: x, y: y, w: w, h: h, open: open, shift: shift)))
+        }
         return .pill(x: x - w / 2, y: y + shift - open / 2, width: w, height: open, radius: min(w, open) / 2)
     }
 }

@@ -5,6 +5,17 @@ func roundHalfUp(_ value: Double) -> Double {
     (value + 0.5).rounded(.down)
 }
 
+/// JavaScript's two-coordinate `Math.hypot`: normalize before taking the square root. Its last
+/// bit matters when equally distant contour vertices compete to split a simplified loop.
+func hypot2(_ x: Double, _ y: Double) -> Double {
+    if x.isInfinite || y.isInfinite { return .infinity }
+    if x.isNaN || y.isNaN { return .nan }
+    let scale = max(abs(x), abs(y))
+    if scale == 0 { return 0 }
+    let a = abs(x) / scale, b = abs(y) / scale
+    return (a * a + b * b).squareRoot() * scale
+}
+
 /// JavaScript number formatting for the rounded values serialized here.
 func numberText(_ value: Double) -> String {
     if value == 0 { return "0" }

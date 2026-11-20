@@ -20,6 +20,8 @@ public final class PreparedAvatar: Sendable {
     public let extent: AvatarSquare
 
     private let volume: Volume
+    private let prefix: String
+    private let rims: (work: Rim, cage: Rim)
 
     /// Throws `AvatarValidationError` if the definition is invalid.
     public init(_ definition: AvatarDefinition, depth: Double = PreparedAvatar.defaultDepth) throws {
@@ -33,6 +35,9 @@ public final class PreparedAvatar: Sendable {
         self.definition = normalized
         self.depth = depth
         self.volume = volume
+        self.prefix = prefix
+        let rims = ribbonRims(validated.body.polys, bounds: volume.bounds)
+        self.rims = rims
         seed = AvatarNoise.hash(normalized.id)
         paths = volume.outlines.enumerated().map { index, outline in
             AvatarFramePath(id: "\(prefix)-\(index)", d: outline.d, segments: outline.segments, evenOdd: outline.evenOdd, box: outline.box)
@@ -42,7 +47,13 @@ public final class PreparedAvatar: Sendable {
         let center = b.center
         let reach = (volume.parts.map(\.depth).max() ?? 0) + 2 * EyeMetrics.lift
         let radius = (b.width * b.width + b.height * b.height + reach * reach).squareRoot() / 2
-        let half = radius + AvatarPose.maxLift + AvatarPose.maxSway * (radius + b.y1 - center.y)
+        func effectReach(_ rim: Rim) -> Double {
+            let reach = ribbonReach(rim.max)
+            return hypot(rim.cx - center.x, rim.cy - center.y) + AvatarPose.maxLift
+                + AvatarPose.maxSway * abs(b.y1 - rim.cy) + reach.radius + reach.band + 1.2
+        }
+        let half = max(radius + AvatarPose.maxLift + AvatarPose.maxSway * (radius + b.y1 - center.y),
+                       effectReach(rims.work), effectReach(rims.cage))
         extent = AvatarSquare(x: center.x - half, y: center.y - half, size: 2 * half)
     }
 
@@ -60,7 +71,7 @@ public final class PreparedAvatar: Sendable {
     public func frame(_ options: AvatarFrameOptions = AvatarFrameOptions(), liveSize: Double? = nil) -> AvatarFrame {
         let pose = AvatarPose(AvatarPose.Input(
             seed: seed, time: options.time, mood: options.mood, gaze: options.gaze,
-            reducedMotion: options.reducedMotion, view: options.view))
+            reducedMotion: options.reducedMotion, view: options.view, state: options.state, stateAge: options.stateAge))
         let b = volume.bounds
         let pivot = b.center
         let basis = ViewBasis(yaw: pose.yaw, pitch: pose.pitch)
@@ -70,9 +81,11 @@ public final class PreparedAvatar: Sendable {
         let px = liveSize.flatMap { $0.isFinite && $0 > 0 ? roundHalfUp($0) : nil } ?? 0
         let gap = px > 0 ? sliceGap * viewBoxSize / px : 0
 
+        let body = bodyScale(bang: pose.bang, dots: pose.dots)
+        let shrink = AvatarMatrix(a: body, b: 0, c: 0, d: body, e: 0, f: 0).about(pivot.x, pivot.y)
         var items: [(depth: Double, shape: AvatarFrameShape)] = []
         items.reserveCapacity(128)
-        for (i, part) in volume.parts.enumerated() {
+        for (i, part) in volume.parts.enumerated() where body > 0 {
             let slices = sideways ? part.xSlices : part.zSlices
             let anchor = i == volume.eyePart ? Point(x: eyesX, y: eyesY) : part.center
             var last = -Double.infinity
@@ -85,19 +98,55 @@ public final class PreparedAvatar: Sendable {
                     : basis.depth(x: anchor.x, y: anchor.y, z: slice.at, pivot: pivot)
                 let matrix = sideways ? basis.sidePlane(x0: slice.at, pivot: pivot) : basis.plane(z: slice.at, pivot: pivot)
                 let key = AvatarSliceKey(part: i, sideways: sideways, index: j)
-                items.append((depth, .slice(key: key, path: slice.outline, matrix: matrix)))
+                items.append((depth, .slice(key: key, path: slice.outline, matrix: shrink.concatenating(matrix))))
             }
         }
-        for index in 0..<2 where volume.face.isVisible(index, in: basis) {
+        for index in 0..<2 where body > 0 && volume.face.isVisible(index, in: basis) {
             let z = volume.face.planeZ[index]
             let depth = basis.depth(x: eyesX, y: eyesY, z: z, pivot: pivot) + 1e-6
-            items.append((depth, .eye(index: index, matrix: basis.plane(z: z, pivot: pivot), mark: volume.face.mark(index, pose))))
+            items.append((depth, .eye(index: index, matrix: shrink.concatenating(basis.plane(z: z, pivot: pivot)), mark: volume.face.mark(index, pose))))
         }
         // JavaScript's sort is stable, so ties keep their drawing order to match its output.
         let order = items.indices.sorted { items[$0].depth != items[$1].depth ? items[$0].depth < items[$1].depth : $0 < $1 }
+        let root = rootMatrix(pose)
+        let fixed = root.inverted
+        let time = options.time.isFinite ? options.time : 0
+        let rim = ribbonsFollow(pose.cage >= 0.5 ? rims.cage : rims.work, pose: pose, bounds: b)
+        let pieces = options.reducedMotion ? [] : ribbonPieces(
+            b, presence: pose.ribbons, seed: seed, time: time, sweep: pose.sweep, cage: pose.cage, rim: rim)
+        let palette = pieces.isEmpty ? [] : ribbonPalette(options.color, seed: seed)
+        var back: [AvatarFrameShape] = [], front: [AvatarFrameShape] = []
+        for (index, piece) in pieces.enumerated() {
+            let a = piece.along.0, z = piece.along.1
+            let stops = [a, (a + z) / 2, z].map { runAt(palette[piece.ribbon], $0) }
+            let long = hypot(piece.to.x - piece.from.x, piece.to.y - piece.from.y) > 0.01
+            let gradient = AvatarRibbonGradient(
+                x1: piece.from.x, y1: piece.from.y,
+                x2: long ? piece.to.x : piece.from.x + 0.01, y2: long ? piece.to.y : piece.from.y,
+                stops: long ? stops : [stops[1], stops[1], stops[1]])
+            let shape = AvatarFrameShape.ribbon(index: index, d: piece.d, box: piece.box, matrix: fixed,
+                                               front: piece.front, fill: stops[1], gradient: gradient)
+            if piece.front { front.append(shape) } else { back.append(shape) }
+        }
+        var framePaths = paths
+        var markPaths: [String: Int] = [:]
+        var marks: [AvatarFrameShape] = []
+        for (index, part) in markParts(b, bang: pose.bang, dots: pose.dots, seed: seed, time: time, still: options.reducedMotion).enumerated() {
+            let id = "\(prefix)-\(part.shape)"
+            let path = markPaths[id] ?? framePaths.count
+            if path == framePaths.count {
+                framePaths.append(AvatarFramePath(id: id, d: part.d, segments: (try? parsePath(part.d)) ?? [], evenOdd: false, box: part.box))
+                markPaths[id] = path
+            }
+            let turn = AvatarMatrix(a: cos(part.turn), b: sin(part.turn), c: -sin(part.turn), d: cos(part.turn), e: 0, f: 0)
+            let scale = AvatarMatrix(a: part.scale, b: 0, c: 0, d: part.scale, e: 0, f: 0)
+            let matrix = fixed.concatenating(turn.about(pivot.x, pivot.y))
+                .concatenating(.translation(part.x, part.y)).concatenating(scale)
+            marks.append(.slice(key: AvatarSliceKey(part: -1, sideways: false, index: index), path: path, matrix: matrix))
+        }
         return AvatarFrame(
-            name: definition.name, color: options.color, ink: options.eyeColor, paths: paths,
-            root: rootMatrix(pose), shapes: order.map { items[$0].shape })
+            name: definition.name, color: options.color, ink: options.eyeColor, paths: framePaths,
+            root: root, shapes: back + order.map { items[$0].shape } + front + marks)
     }
 
     private func rootMatrix(_ pose: AvatarPose) -> AvatarMatrix {

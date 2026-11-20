@@ -1,23 +1,23 @@
-private func segmentDistance(_ px: Double, _ py: Double, _ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> Double {
+private func segmentDistanceSquared(_ px: Double, _ py: Double, _ ax: Double, _ ay: Double, _ bx: Double, _ by: Double) -> Double {
     let dx = bx - ax, dy = by - ay
     let length = dx * dx + dy * dy
     var t = length > 0 ? ((px - ax) * dx + (py - ay) * dy) / length : 0
     t = t < 0 ? 0 : t > 1 ? 1 : t
     let ex = ax + t * dx - px, ey = ay + t * dy - py
-    return (ex * ex + ey * ey).squareRoot()
+    return ex * ex + ey * ey
 }
 
 func edgeDistance(_ polys: [[Point]], _ x: Double, _ y: Double) -> Double {
     var best = Double.infinity
     forEachEdge(polys) { p, q in
-        best = min(best, segmentDistance(x, y, p.x, p.y, q.x, q.y))
+        best = min(best, segmentDistanceSquared(x, y, p.x, p.y, q.x, q.y).squareRoot())
     }
     return best
 }
 
 /// Edges bucketed on a coarse grid, for nearest-edge queries that only visit nearby buckets.
 private struct EdgeIndex {
-    private let cell = 3.0
+    private let cell = 6.0
     private let buckets: [[Int32]]
     private let edges: [Double]
     private let originX: Double
@@ -66,15 +66,16 @@ private struct EdgeIndex {
                     if cx < 0 || cx >= span { continue }
                     for e in buckets[cy * span + cx] {
                         let k = Int(e)
-                        let d = segmentDistance(x, y, edges[k], edges[k + 1], edges[k + 2], edges[k + 3])
+                        let d = segmentDistanceSquared(x, y, edges[k], edges[k + 1], edges[k + 2], edges[k + 3])
                         if d < best { best = d }
                     }
                 }
             }
-            if best <= Double(r) * cell { break }
+            let reach = Double(r) * cell
+            if best <= reach * reach { break }
             r += 1
         }
-        return best
+        return best.squareRoot()
     }
 }
 
@@ -125,11 +126,11 @@ struct CellBox {
 /// How far a simplified cross-section may stray from its contour, units.
 private let contourTolerance = 0.04
 
-/// Steepness of the outline term in the contour field, so cross-sections hug the outline.
-private let outlineSlope = 4.0
-
-/// Cross-section {h ≥ level} clipped to the outline (and to `box`, if given), as loops.
-func levelLoops(_ g: DepthGrid, level: Double, box: CellBox? = nil) -> [[Point]] {
+/// Cross-section at `level` clipped to the outline (and to `box`, if given), as loops.
+/// `field` is continuous across the outline and approximately a distance in viewBox units.
+func levelLoops(
+    _ g: DepthGrid, level: Double, field: (Double, Double, Double, Double) -> Double, box: CellBox? = nil
+) -> [[Point]] {
     let i0 = box.map { max(0, $0.i0 - 1) } ?? 0, i1 = box.map { min(g.nx - 1, $0.i1 + 1) } ?? g.nx - 1
     let j0 = box.map { max(0, $0.j0 - 1) } ?? 0, j1 = box.map { min(g.ny - 1, $0.j1 + 1) } ?? g.ny - 1
     let nx = i1 - i0 + 1, ny = j1 - j0 + 1
@@ -137,10 +138,11 @@ func levelLoops(_ g: DepthGrid, level: Double, box: CellBox? = nil) -> [[Point]]
     for j in 0..<ny {
         for i in 0..<nx {
             let k = (j + j0) * g.nx + i + i0
-            var v = min(g.height[k] - level, outlineSlope * g.signedDistance[k])
+            let sd = g.signedDistance[k]
+            var v = min(field(g.x0 + Double(i + i0) * g.step, g.y0 + Double(j + j0) * g.step, sd, level), sd)
             if let box {
                 let inward = min(i + i0 - box.i0, box.i1 - i - i0, j + j0 - box.j0, box.j1 - j - j0)
-                v = min(v, outlineSlope * g.step * Double(inward))
+                v = min(v, g.step * Double(inward))
             }
             values[j * nx + i] = v
         }

@@ -34,6 +34,30 @@ enum PartShape {
         }
     }
 
+    /// Signed, distance-like field of the cross-section at `level`. Unlike height minus level,
+    /// this stays continuous across the outline, so interpolated contours follow the real rim.
+    func levelField(_ x: Double, _ y: Double, _ distance: Double, _ level: Double) -> Double {
+        switch self {
+        case let .inflated(depth, rxy, rz):
+            let half = depth / 2
+            let inset: Double
+            if rxy <= 0 || rz <= 0 || level <= half - rz {
+                inset = 0
+            } else if level >= half {
+                inset = rxy
+            } else {
+                let s = (level - (half - rz)) / rz
+                inset = rxy * (1 - max(0, 1 - s * s).squareRoot())
+            }
+            return distance - inset
+        case let .revolved(profile, axis, horizontal, volume):
+            let radius = profile.radius(at: horizontal ? x : y)
+            let across = (horizontal ? y : x) - axis
+            let z = level / max(volume, 1e-6)
+            return (radius * radius - across * across - z * z) / (2 * max(radius, 0.5))
+        }
+    }
+
     /// Classifies a part with outline bounds `b`: shared horizontal axis, own vertical axis
     /// (multi-part bodies only), or inflated.
     static func classify(

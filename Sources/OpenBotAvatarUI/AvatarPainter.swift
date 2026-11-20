@@ -9,6 +9,14 @@ extension AvatarMatrix {
 }
 
 extension AvatarColor {
+    init?(cgColor: CGColor) {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let rgb = cgColor.converted(to: space, intent: .defaultIntent, options: nil),
+              let values = rgb.components, values.count >= 3 else { return nil }
+        func byte(_ value: CGFloat) -> UInt8 { UInt8(min(255, max(0, (value * 255).rounded()))) }
+        self.init(red: byte(values[0]), green: byte(values[1]), blue: byte(values[2]))
+    }
+
     public var cgColor: CGColor {
         CGColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
     }
@@ -17,7 +25,6 @@ extension AvatarColor {
 /// Draws frames of one prepared avatar with Core Graphics. Equal avatars share their parsed paths.
 public final class AvatarPainter: @unchecked Sendable {
     private let paths: [CGPath]
-    private let evenOdd: [Bool]
 
     nonisolated(unsafe) private static let shared: NSCache<PreparedAvatar, AvatarPainter> = {
         let cache = NSCache<PreparedAvatar, AvatarPainter>()
@@ -27,7 +34,6 @@ public final class AvatarPainter: @unchecked Sendable {
 
     public init(_ prepared: PreparedAvatar) {
         paths = prepared.paths.map { makePath($0.segments) }
-        evenOdd = prepared.paths.map(\.evenOdd)
     }
 
     public static func cached(_ prepared: PreparedAvatar) -> AvatarPainter {
@@ -50,17 +56,42 @@ public final class AvatarPainter: @unchecked Sendable {
             context.concatenate(matrices[index].transform)
             switch shape {
             case let .slice(_, path, _):
-                context.addPath(paths[path])
-                context.fillPath(using: evenOdd[path] ? .evenOdd : .winding)
+                context.addPath(path < paths.count ? paths[path] : makePath(frame.paths[path].segments))
+                context.fillPath(using: frame.paths[path].evenOdd ? .evenOdd : .winding)
             case let .eye(_, _, mark):
                 paintEye(mark, in: context, ink: ink)
+            case let .ribbon(_, d, _, _, _, fill, gradient):
+                paintRibbon(d, fill: fill, gradient: gradient, in: context)
             }
             context.restoreGState()
         }
     }
 
+    private func paintRibbon(_ d: String, fill: AvatarColor, gradient: AvatarRibbonGradient, in context: CGContext) {
+        let path = makePath((try? AvatarPathSegment.parse(svg: d)) ?? [])
+        let colors = gradient.stops.map(\.cgColor) as CFArray
+        let locations = gradient.stops.indices.map { CGFloat($0) / CGFloat(gradient.stops.count - 1) }
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let cgGradient = CGGradient(colorsSpace: space, colors: colors, locations: locations) else {
+            context.addPath(path)
+            context.setFillColor(fill.cgColor)
+            context.fillPath()
+            return
+        }
+        context.addPath(path)
+        context.clip()
+        context.drawLinearGradient(cgGradient,
+                                   start: CGPoint(x: gradient.x1, y: gradient.y1),
+                                   end: CGPoint(x: gradient.x2, y: gradient.y2),
+                                   options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+    }
+
     private func paintEye(_ mark: AvatarEyeMark, in context: CGContext, ink: CGColor) {
         switch mark {
+        case let .path(d):
+            context.addPath(makePath((try? AvatarPathSegment.parse(svg: d)) ?? []))
+            context.setFillColor(ink)
+            context.fillPath()
         case let .pill(x, y, width, height, radius):
             let rect = CGRect(x: x, y: y, width: width, height: height)
             context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))

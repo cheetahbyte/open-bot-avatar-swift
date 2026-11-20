@@ -22,6 +22,7 @@ struct AvatarSurfaceState: Equatable {
     var still: Bool
     var fill: CGColor
     var ink: CGColor
+    var state: AvatarState?
 
     var followsPointer: Bool { gaze == .pointer && !still }
 }
@@ -131,19 +132,23 @@ final class AvatarSurfaceView: AvatarPlatformView {
     /// Returns whether more frames are needed.
     private func draw() -> Bool {
         guard let state, let prepared else { return false }
+        let color = AvatarColor(cgColor: state.fill) ?? .defaultBody
+        let eyeColor = AvatarColor(cgColor: state.ink) ?? .defaultEyes
         if state.still {
             var gaze: AvatarGaze?
             if case let .look(look) = state.gaze { gaze = AvatarGaze(x: look.x, y: look.y) }
-            let options = AvatarFrameOptions(mood: .settled(state.mood), gaze: gaze, view: state.rotation, reducedMotion: true)
+            let options = AvatarFrameOptions(color: color, eyeColor: eyeColor, mood: .settled(state.mood), gaze: gaze,
+                                             view: state.rotation, reducedMotion: true, state: state.state)
             paint(prepared.frame(options), prepared, state)
             return false
         }
         let now = CACurrentMediaTime()
         let step = animator.step(AvatarAnimator.Input(
             now: now, mood: state.mood, target: lookTarget(state, prepared), hold: state.gaze == .hold,
-            reducedMotion: state.reducedMotion))
+            reducedMotion: state.reducedMotion, state: state.state))
         let options = AvatarFrameOptions(
-            time: now, mood: step.mood, gaze: step.gaze, view: state.rotation, reducedMotion: state.reducedMotion)
+            color: color, eyeColor: eyeColor, time: now, mood: step.mood, gaze: step.gaze, view: state.rotation,
+            reducedMotion: state.reducedMotion, state: state.state, stateAge: step.stateAge)
         paint(prepared.frame(options, liveSize: size), prepared, state)
         return !state.reducedMotion || step.moving || state.followsPointer
     }

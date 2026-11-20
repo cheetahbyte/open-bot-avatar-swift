@@ -41,7 +41,8 @@ public struct AvatarView: View {
         _ definition: AvatarDefinition,
         color: Color = Color(.defaultBody),
         eyeColor: Color = Color(.defaultEyes),
-        mood: AvatarMood = .idle,
+        state: AvatarState? = nil,
+        mood: AvatarMood = .neutral,
         gaze: AvatarGazeBehavior = .idle,
         rotation: AvatarViewRotation? = nil,
         depth: Double = PreparedAvatar.defaultDepth,
@@ -50,7 +51,7 @@ public struct AvatarView: View {
         label: String? = nil
     ) {
         surface = AvatarSurface(
-            definition: definition, color: color, eyeColor: eyeColor, mood: mood, gaze: gaze, rotation: rotation,
+            definition: definition, color: color, eyeColor: eyeColor, state: state, mood: mood, gaze: gaze, rotation: rotation,
             depth: depth, motion: motion, still: still)
         self.label = label
     }
@@ -72,6 +73,7 @@ private struct AvatarSurface {
     let definition: AvatarDefinition
     let color: Color
     let eyeColor: Color
+    let state: AvatarState?
     let mood: AvatarMood
     let gaze: AvatarGazeBehavior
     let rotation: AvatarViewRotation?
@@ -88,7 +90,7 @@ private struct AvatarSurface {
         }
         view.update(AvatarSurfaceState(
             definition: definition, depth: depth, mood: mood, gaze: gaze, rotation: rotation, reducedMotion: reduced,
-            still: still, fill: color.resolve(in: environment).cgColor, ink: eyeColor.resolve(in: environment).cgColor))
+            still: still, fill: color.resolve(in: environment).cgColor, ink: eyeColor.resolve(in: environment).cgColor, state: state))
     }
 }
 
