@@ -1,12 +1,9 @@
 # Open Bot Avatar for Swift
 
-A dependency-free Swift port of [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar) for iOS and macOS.
+A native Swift and SwiftUI port of [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar) by Dominik Scholz, with no dependencies.
 
-This port tracks upstream 0.3.0, pinned at `5e64c081971eb296f562544641bad37d40fb36b6`.
-It includes six states, independent moods, morphing eyes, animated marks, gradient ribbons, and smoother volume contours.
-
-The definition contract remains v1: one SVG silhouette path and an eye placement.
-The renderer owns color, implied volume, state, mood, and gaze; definitions don't store animation settings.
+Tracks [upstream 0.3.0](https://github.com/DominikScholz/open-bot-avatar/tree/5e64c081971eb296f562544641bad37d40fb36b6): six states, independent moods, morphing eyes, replacement marks, and gradient ribbons.
+Definitions use the unchanged v1 contract: one SVG silhouette path and an eye placement.
 
 ## Requirements
 
@@ -15,13 +12,17 @@ The renderer owns color, implied volume, state, mood, and gaze; definitions don'
 
 ## Install
 
-Add the package to your `Package.swift` dependencies:
+The `0.1.0` tag contains the older upstream 0.2.0 engine.
+To use the updated engine, pin this implementation revision in your `Package.swift` dependencies:
 
 ```swift
-.package(url: "https://github.com/cheetahbyte/open-bot-avatar-swift.git", from: "0.1.0")
+.package(
+    url: "https://github.com/cheetahbyte/open-bot-avatar-swift.git",
+    revision: "f3488997d7e114a4d180ec05f789d3c609ab655e"
+)
 ```
 
-The package has two products:
+Choose a product:
 
 | Product | Contents | Imports |
 | --- | --- | --- |
@@ -37,20 +38,14 @@ import OpenBotAvatar
 import OpenBotAvatarUI
 import SwiftUI
 
-struct BotHeader: View {
-    var isWorking: Bool
-
-    var body: some View {
-        AvatarView(
-            AvatarCatalog.definition(id: "mug")!,
-            color: .orange,
-            state: isWorking ? .working : .idle,
-            mood: .neutral,
-            gaze: .pointer
-        )
-        .frame(width: 96, height: 96)
-    }
-}
+AvatarView(
+    AvatarCatalog.definition(id: "mug")!,
+    color: .orange,
+    state: .working,
+    mood: .happy,
+    gaze: .pointer
+)
+.frame(width: 96, height: 96)
 ```
 
 State and mood changes ease from the current pose, including an interrupted transition.
@@ -69,7 +64,7 @@ A mood change doesn't restart the state's clock.
 | --- | --- |
 | `definition` | The avatar. Required. |
 | `color`, `eyeColor` | Any SwiftUI `Color`. Dynamic colors follow the appearance. |
-| `state` | `.idle` (default), `.thinking`, `.working`, `.waiting`, `.blocked`, or `.done`. |
+| `state` | Activity state; defaults to `.idle`. |
 | `mood` | `.neutral` (default) or `.happy`, independently of state. |
 | `gaze` | `.idle` (default), `.pointer`, `.look(AvatarLook)`, or `.hold`. |
 | `rotation` | Extra rotation on top of the resting view, in radians. |
@@ -78,13 +73,12 @@ A mood change doesn't restart the state's clock.
 | `still` | Draws once and never animates. Use it for lists and thumbnails. |
 | `label` | Accessible name. The default is the definition's name. Use `""` for a decorative avatar. |
 
-The deprecated `mood: .idle` and `mood: .thinking` arguments still work.
-Use `state: .idle, mood: .neutral` and `state: .thinking, mood: .neutral` instead.
-An explicit `state` overrides the state inferred from a legacy mood.
-
-With `.system`, the view follows the system's Reduce Motion setting.
-Reduced motion disables turns, hops, blinking, and ribbons while retaining calm marks, eye shapes, and explicit gaze.
+Reduced motion keeps the body and marks still, stops blinking, and omits ribbons; eye shapes and explicit gaze remain.
 A view mounted in `.done` starts at rest; changing into `.done` starts its celebration.
+
+Legacy `mood: .idle` and `mood: .thinking` calls still work but are deprecated.
+Use `state` instead; an explicit state takes precedence.
+Custom renderers must handle the new ribbon shapes and filled eye paths.
 
 ## Validate a definition
 
@@ -99,13 +93,12 @@ case .failure(let error):
 }
 ```
 
-The rules are in the [avatar definition contract](https://github.com/DominikScholz/open-bot-avatar/blob/main/docs/avatar-contract.md).
+The rules are in the [avatar definition contract](https://github.com/DominikScholz/open-bot-avatar/blob/5e64c081971eb296f562544641bad37d40fb36b6/docs/avatar-contract.md).
 
 ## Render without a view
 
-`PreparedAvatar` holds a validated definition with its volume built.
-Preparation costs more than producing a frame; reuse the prepared volume across frames.
-Keep one instance per definition and depth, or use `PreparedAvatar.cached`:
+Prepare geometry off the main thread and reuse it across frames.
+`PreparedAvatar.cached` shares prepared geometry by definition and depth:
 
 ```swift
 let avatar = try PreparedAvatar.cached(definition)
@@ -122,35 +115,16 @@ let frame = avatar.frame(options)
 let image = avatar.image(options, pixels: 512) // Needs OpenBotAvatarUI.
 ```
 
-`AvatarFrame` is plain data. Paint `shapes` in order, inside the `root` transform.
-Slices reference `frame.paths`; the table retains prepared body paths even when a mark replaces the body.
-Ribbons carry their own paths, fill colors, and linear gradients.
-Eyes can be pills, stroked arcs, or filled morph paths.
-SVG output includes only referenced body and mark paths.
+For custom rendering, paint `frame.shapes` in order inside `frame.root`.
+Slices reference `frame.paths`; eyes are pills, stroked arcs, or filled paths.
+Ribbons carry their own paths and linear gradients.
 
-Pass `stateAge` in seconds to animate a celebration from state entry.
-Without it, a standalone `.done` frame rests; `.working` uses `time` for its sweep clock.
-The `time` option is the independent animation clock, also in seconds.
+Both clocks use seconds: `time` drives ambient motion, and `stateAge` measures time since state entry.
+Without `stateAge`, `.done` rests and `.working` uses `time` for its sweep clock.
 
-To drive animation, keep one `AvatarAnimator` and call `step` once per frame:
-
-```swift
-var animator = AvatarAnimator()
-let step = animator.step(.init(now: 12.5, mood: .happy, state: .working))
-let animatedOptions = AvatarFrameOptions(
-    time: 1.5,
-    mood: step.mood,
-    gaze: step.gaze,
-    state: step.state,
-    stateAge: step.stateAge
-)
-let animatedFrame = avatar.frame(animatedOptions)
-```
-
-Use a monotonic wall clock for `now`, in seconds.
-Keep the animator between frames so gaze, interrupted blends, and state clocks remain continuous.
-`AvatarMoodState(state:mood:age:)` also represents a settled state for custom animation drivers.
-The original `.settled` and `.easing` cases remain available.
+For custom animation hosts, keep one `AvatarAnimator` and call `step` once per frame.
+Use a monotonic clock for `now`, in seconds.
+Pass the returned `mood`, `gaze`, `state`, and `stateAge` to `AvatarFrameOptions`.
 
 ## Run development checks
 
@@ -161,43 +135,29 @@ swift build
 swift test
 ```
 
-The engine tests use Foundation; painter tests use offscreen Core Graphics without an app host or simulator.
-Parity fixtures cover every state and mood, legacy inputs, reduced motion, interrupted blends, and animator clocks.
-Representative frames cover the mug, barbell, controller, asymmetric chat silhouette, egg, and primitive shapes.
-Checks include eye morphs, marks, ribbon geometry, exact palette colors, SVG output, and sampled volume contours.
-Numeric poses and matrices use `1e-9` absolute tolerance.
-Serialized paths retain command structure except independently simplified revolved contours.
-Those contours allow `0.04` units plus differential coordinate rounding, bounded at `0.055` units.
+Tests compare poses, frames, SVG output, and animation clocks against fixtures generated by the pinned upstream engine.
+Painter tests use offscreen Core Graphics. No app host or simulator is required.
 
 ## Regenerate upstream data
 
-`AvatarCatalog` contains upstream's starters and gallery.
-Regenerate the catalog and plain JSON parity fixtures with Node 22.18 or later:
+With Node 22.18 or later, regenerate the catalog and parity fixtures:
 
 ```sh
 node scripts/sync-upstream.mjs PATH_TO_OPEN_BOT_AVATAR
 ```
 
-Replace `PATH_TO_OPEN_BOT_AVATAR` with a pristine checkout of the pinned upstream revision.
+Replace `PATH_TO_OPEN_BOT_AVATAR` with a clean checkout of the linked upstream revision.
 The scripts verify the revision and reject tracked changes.
-Without an argument, they use `../.build/open-bot-avatar-0.3.0` relative to this package.
-They import TypeScript directly; no npm dependencies or Swift-generated expectations are involved.
-
-Fixtures live in `Tests/OpenBotAvatarTests/Fixtures/upstream-0.3.0.json` and record their source revision.
-Only six representative cases include SVG snapshots, rather than snapshots of every catalog avatar.
-To regenerate only the catalog, run `node scripts/sync-catalog.mjs PATH_TO_OPEN_BOT_AVATAR`.
+To update only the catalog, run `node scripts/sync-catalog.mjs PATH_TO_OPEN_BOT_AVATAR`.
 
 ## Differences from the TypeScript package
 
 - The CSS 3D scene renderer isn't included. `AvatarView` always paints to a single bitmap.
 - `silhouetteSeams`, `faceRoom`, and the strict validation checks aren't included. They're authoring tools for generated avatars.
 - Colors are `AvatarColor` values in the engine and SwiftUI `Color` values in the view, not CSS strings.
-- `AvatarView` prepares new geometry off the main thread and stays empty until preparation finishes.
-- Each animated avatar has its own display link.
+- `AvatarView` prepares geometry off the main thread and stays empty until preparation finishes.
+- Some revolved cross-sections differ slightly because of floating-point rounding and contour simplification.
 
-SVG parity checks normalize definition identifiers and definition order, but preserve paint order and transforms.
-Some revolved cross-sections differ within the contour tolerance described in the development checks.
+## License and attribution
 
-## License
-
-[MIT](LICENSE)
+[MIT](LICENSE). Based on [Open Bot Avatar](https://github.com/DominikScholz/open-bot-avatar) by Dominik Scholz.
