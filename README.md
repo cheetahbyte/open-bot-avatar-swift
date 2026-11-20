@@ -5,6 +5,9 @@ A native Swift and SwiftUI port of [Open Bot Avatar](https://github.com/DominikS
 Tracks [upstream 0.3.0](https://github.com/DominikScholz/open-bot-avatar/tree/5e64c081971eb296f562544641bad37d40fb36b6): six states, independent moods, morphing eyes, replacement marks, and gradient ribbons.
 Definitions use the unchanged v1 contract: one SVG silhouette path and an eye placement.
 
+Major and minor versions follow upstream. Patch releases can include native-only fixes, so patch numbers can differ.
+The linked upstream revision identifies the engine used by this release. See the [changelog](CHANGELOG.md) for upgrade notes.
+
 ## Requirements
 
 - iOS 17 or macOS 14
@@ -12,13 +15,12 @@ Definitions use the unchanged v1 contract: one SVG silhouette path and an eye pl
 
 ## Install
 
-The `0.1.0` tag contains the older upstream 0.2.0 engine.
-To use the updated engine, pin this implementation revision in your `Package.swift` dependencies:
+Add the `0.3.x` release family to your `Package.swift` dependencies:
 
 ```swift
 .package(
     url: "https://github.com/cheetahbyte/open-bot-avatar-swift.git",
-    revision: "f3488997d7e114a4d180ec05f789d3c609ab655e"
+    "0.3.0"..<"0.4.0"
 )
 ```
 
